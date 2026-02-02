@@ -1,22 +1,20 @@
 # -*- coding: utf-8 -*-
 """
-NTech LLM Tuner - Professional GUI for fine-tuning LLMs
-Supports GPU (Unsloth) and CPU training with comprehensive validation and monitoring
+NTTuner - Professional LLM Fine-Tuning Studio
+Optimized for NTCompanion datasets with enhanced GPU detection
 
-COMPLETE FEATURE SET:
-✓ Pre-training validation with warnings
+FEATURES:
+✓ Perfect compatibility with NTCompanion JSONL output
+✓ Enhanced GPU detection (CUDA/ROCm/MPS)
 ✓ Dataset validation and statistics
 ✓ VRAM usage estimation
-✓ Enhanced progress logging with ETA
-✓ GUI state locking during training
+✓ Progress tracking with ETA
+✓ Auto-configuration based on hardware
 ✓ Checkpoint resume and recovery
-✓ Graceful stop with cleanup
-✓ Dataset preview panel
-✓ Golden prompt regression testing
-✓ Export validation and sanity checks
-✓ Run manifest and audit logging
-✓ Smart defaults and auto-tuning
+✓ Multi-format dataset support (JSONL/JSON/CSV)
+✓ Blank system context support
 """
+
 import dearpygui.dearpygui as dpg
 import subprocess
 import os
@@ -29,19 +27,122 @@ from typing import Optional, Dict, Any, List, Tuple
 from dataclasses import dataclass, asdict
 from datetime import datetime
 import traceback
+import sys
 
 
-# ─── DEPENDENCY CHECKS ────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════
+# ENHANCED GPU DETECTION
+# ═══════════════════════════════════════════════════════════════════════
+
+def detect_gpu_comprehensive():
+    """
+    Comprehensive GPU detection supporting:
+    - NVIDIA CUDA
+    - AMD ROCm
+    - Apple Metal (MPS)
+    """
+    gpu_info = {
+        "has_gpu": False,
+        "gpu_type": "CPU",
+        "gpu_name": "None",
+        "gpu_memory": 0.0,
+        "gpu_count": 0,
+        "backend": "none",
+        "cuda_version": None,
+        "details": []
+    }
+
+    try:
+        import torch
+        gpu_info["details"].append(f"PyTorch {torch.__version__} detected")
+
+        # Check CUDA (NVIDIA)
+        if torch.cuda.is_available():
+            gpu_info["has_gpu"] = True
+            gpu_info["gpu_type"] = "CUDA"
+            gpu_info["backend"] = "cuda"
+            gpu_info["gpu_count"] = torch.cuda.device_count()
+            gpu_info["gpu_name"] = torch.cuda.get_device_name(0)
+            gpu_info["gpu_memory"] = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+
+            if hasattr(torch.version, 'cuda') and torch.version.cuda:
+                gpu_info["cuda_version"] = torch.version.cuda
+                gpu_info["details"].append(f"CUDA {torch.version.cuda}")
+
+            gpu_info["details"].append(f"Device: {gpu_info['gpu_name']}")
+            gpu_info["details"].append(f"VRAM: {gpu_info['gpu_memory']:.1f} GB")
+            gpu_info["details"].append(f"GPU Count: {gpu_info['gpu_count']}")
+            return gpu_info
+
+        # Check ROCm (AMD)
+        if hasattr(torch, 'hip') and torch.hip.is_available():
+            gpu_info["has_gpu"] = True
+            gpu_info["gpu_type"] = "ROCm"
+            gpu_info["backend"] = "hip"
+            gpu_info["gpu_count"] = torch.hip.device_count()
+            gpu_info["gpu_name"] = torch.hip.get_device_name(0)
+            try:
+                gpu_info["gpu_memory"] = torch.hip.get_device_properties(0).total_memory / (1024 ** 3)
+            except:
+                gpu_info["gpu_memory"] = 8.0
+            gpu_info["details"].append(f"ROCm Device: {gpu_info['gpu_name']}")
+            gpu_info["details"].append(f"VRAM: {gpu_info['gpu_memory']:.1f} GB")
+            return gpu_info
+
+        # Check Metal (Apple Silicon)
+        if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+            gpu_info["has_gpu"] = True
+            gpu_info["gpu_type"] = "MPS"
+            gpu_info["backend"] = "mps"
+            gpu_info["gpu_count"] = 1
+            try:
+                import platform
+                machine = platform.machine()
+                if 'arm' in machine.lower():
+                    gpu_info["gpu_name"] = "Apple Silicon (M-series)"
+                    import psutil
+                    total_ram = psutil.virtual_memory().total / (1024 ** 3)
+                    gpu_info["gpu_memory"] = total_ram * 0.7
+                else:
+                    gpu_info["gpu_name"] = "Metal-capable GPU"
+                    gpu_info["gpu_memory"] = 8.0
+            except:
+                gpu_info["gpu_name"] = "Apple Metal GPU"
+                gpu_info["gpu_memory"] = 8.0
+            gpu_info["details"].append(f"Metal Performance Shaders enabled")
+            gpu_info["details"].append(f"Device: {gpu_info['gpu_name']}")
+            gpu_info["details"].append(f"Unified Memory: ~{gpu_info['gpu_memory']:.1f} GB")
+            return gpu_info
+
+        gpu_info["details"].append("No GPU acceleration available")
+        gpu_info["details"].append("Training will use CPU (very slow)")
+
+    except ImportError:
+        gpu_info["details"].append("PyTorch not installed")
+    except Exception as e:
+        gpu_info["details"].append(f"GPU detection error: {str(e)}")
+
+    return gpu_info
+
+
+# Initialize GPU detection
+GPU_INFO = detect_gpu_comprehensive()
+HAS_GPU = GPU_INFO["has_gpu"]
+GPU_TYPE = GPU_INFO["gpu_type"]
+GPU_NAME = GPU_INFO["gpu_name"]
+GPU_MEMORY = GPU_INFO["gpu_memory"]
+GPU_COUNT = GPU_INFO["gpu_count"]
+GPU_BACKEND = GPU_INFO["backend"]
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# DEPENDENCY CHECKS
+# ═══════════════════════════════════════════════════════════════════════
 
 def get_ollama_models():
     """Get list of installed Ollama models"""
     try:
-        result = subprocess.run(
-            ["ollama", "list"],
-            capture_output=True,
-            text=True,
-            timeout=5
-        )
+        result = subprocess.run(["ollama", "list"], capture_output=True, text=True, timeout=5)
         if result.returncode == 0:
             lines = result.stdout.strip().split('\n')
             if len(lines) > 1:
@@ -49,21 +150,23 @@ def get_ollama_models():
                 for line in lines[1:]:
                     parts = line.split()
                     if parts:
-                        model_name = parts[0]
-                        models.append(model_name)
+                        models.append(parts[0])
                 return models
-    except (subprocess.TimeoutExpired, FileNotFoundError):
+    except:
         pass
     return []
 
 
 def get_popular_models():
-    """Get list of popular models for fine-tuning"""
+    """Get comprehensive list of models for fine-tuning"""
     models = {
         "Ollama Models (Installed)": get_ollama_models(),
-        "Popular Ollama Models (Download Available)": [
-            "llama3:8b", "llama3:70b", "mistral:7b", "mixtral:8x7b",
-            "phi3:mini", "gemma:7b", "qwen2:7b",
+        "Popular Ollama Models": [
+            "llama3.2:3b", "llama3.1:8b", "llama3:70b",
+            "mistral:7b", "mixtral:8x7b",
+            "phi3:mini", "phi4:14b",
+            "gemma:7b", "gemma2:9b",
+            "qwen2.5:7b", "qwen2.5:14b",
         ],
         "Small Models (CPU-friendly)": [
             "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
@@ -79,8 +182,8 @@ def get_popular_models():
         ],
         "Large Models (Good GPU required)": [
             "unsloth/llama-3-70b-bnb-4bit",
-            "unsloth/mixtral-8x7b-bnb-4bit",
             "meta-llama/Llama-3.1-8B-Instruct",
+            "meta-llama/Llama-3.1-70B-Instruct",
         ]
     }
 
@@ -94,38 +197,21 @@ def get_popular_models():
 
 try:
     import torch
-
     HAS_TORCH = True
-    HAS_GPU = torch.cuda.is_available()
-
-    if HAS_GPU:
-        GPU_COUNT = torch.cuda.device_count()
-        GPU_NAME = torch.cuda.get_device_name(0)
-        GPU_MEMORY = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
-    else:
-        GPU_COUNT = 0
-        GPU_NAME = "None"
-        GPU_MEMORY = 0
 except ImportError:
     HAS_TORCH = False
-    HAS_GPU = False
-    GPU_COUNT = 0
-    GPU_NAME = "None"
-    GPU_MEMORY = 0
 
 try:
     from unsloth import FastLanguageModel
-
     HAS_UNSLOTH = True
-except (ImportError, NotImplementedError, RuntimeError) as e:
+except:
     HAS_UNSLOTH = False
 
 try:
     from trl import SFTTrainer
     from transformers import TrainingArguments, AutoModelForCausalLM, AutoTokenizer, TrainerCallback
-    from datasets import load_dataset
+    from datasets import load_dataset, Dataset
     from peft import LoraConfig, get_peft_model
-
     HAS_TRANSFORMERS = True
 except ImportError:
     HAS_TRANSFORMERS = False
@@ -133,10 +219,12 @@ except ImportError:
 DEPS_AVAILABLE = HAS_TORCH and HAS_TRANSFORMERS
 
 
-# ─── UTILITY FUNCTIONS ────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════
+# UTILITY FUNCTIONS
+# ═══════════════════════════════════════════════════════════════════════
 
 def compute_file_hash(filepath: str) -> str:
-    """Compute SHA256 hash of file for audit trail"""
+    """Compute SHA256 hash of file"""
     sha256 = hashlib.sha256()
     try:
         with open(filepath, 'rb') as f:
@@ -148,27 +236,66 @@ def compute_file_hash(filepath: str) -> str:
 
 
 def get_library_versions() -> Dict[str, str]:
-    """Get versions of key libraries for audit"""
+    """Get versions of key libraries"""
     versions = {}
     try:
-        versions["torch"] = torch.__version__
-        versions["transformers"] = __import__("transformers").__version__
-        versions["datasets"] = __import__("datasets").__version__
-        versions["trl"] = __import__("trl").__version__
-        versions["peft"] = __import__("peft").__version__
+        if HAS_TORCH:
+            versions["torch"] = torch.__version__
+        if HAS_TRANSFORMERS:
+            versions["transformers"] = __import__("transformers").__version__
+            versions["datasets"] = __import__("datasets").__version__
+            versions["trl"] = __import__("trl").__version__
+            versions["peft"] = __import__("peft").__version__
+        if HAS_UNSLOTH:
+            versions["unsloth"] = "available"
     except:
         pass
     return versions
 
 
-# ─── CONFIGURATION ────────────────────────────────────────────────────
+def format_time(seconds: float) -> str:
+    """Format seconds into human-readable time"""
+    if seconds < 60:
+        return f"{seconds:.0f}s"
+    elif seconds < 3600:
+        return f"{seconds / 60:.1f}m"
+    else:
+        return f"{seconds / 3600:.1f}h"
+
+
+def get_device_map() -> str:
+    """Get appropriate device map based on backend"""
+    if GPU_BACKEND == "cuda":
+        return "auto"
+    elif GPU_BACKEND == "hip":
+        return "auto"
+    elif GPU_BACKEND == "mps":
+        return "mps"
+    else:
+        return "cpu"
+
+
+def get_torch_dtype():
+    """Get appropriate torch dtype based on backend"""
+    if not HAS_TORCH:
+        return None
+    if GPU_BACKEND in ["cuda", "hip"]:
+        return torch.float16
+    elif GPU_BACKEND == "mps":
+        return torch.float16
+    else:
+        return torch.float32
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# CONFIGURATION
+# ═══════════════════════════════════════════════════════════════════════
 
 @dataclass
 class TrainingConfig:
-    """Training configuration with validation and warnings"""
+    """Training configuration with validation"""
     base_model: str = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
     dataset_path: str = ""
-    system_prompt: str = "You are a helpful assistant."
     lora_rank: int = 32
     lora_alpha: int = 64
     lora_dropout: float = 0.0
@@ -179,1133 +306,645 @@ class TrainingConfig:
     warmup_steps: int = 10
     max_seq_length: int = 512
     output_name: str = "my-fine-tuned-model"
-    output_dir: str = "./gguf_export"
+    output_dir: str = "./fine_tuned_output"
     quant_method: str = "q5_k_m"
     save_steps: int = 100
     logging_steps: int = 10
-    test_prompts: List[str] = None  # For regression testing
-
-    def __post_init__(self):
-        if self.test_prompts is None:
-            self.test_prompts = []
 
     def validate(self) -> Tuple[bool, str]:
-        """Validate configuration - returns (is_valid, error_message)"""
+        """Validate configuration"""
         if not self.base_model.strip():
-            return False, "Base model name cannot be empty"
-        if not self.dataset_path or not os.path.exists(self.dataset_path):
-            return False, f"Dataset path not found: {self.dataset_path}"
-        if self.lora_rank < 1 or self.lora_rank > 256:
-            return False, "LoRA rank must be between 1 and 256"
+            return False, "Base model cannot be empty"
+        if not self.dataset_path.strip():
+            return False, "Dataset path cannot be empty"
+        if not os.path.exists(self.dataset_path):
+            return False, f"Dataset file not found: {self.dataset_path}"
+        if self.lora_rank < 1 or self.lora_rank > 512:
+            return False, "LoRA rank must be between 1 and 512"
         if self.epochs < 1:
             return False, "Epochs must be at least 1"
         if self.batch_size < 1:
             return False, "Batch size must be at least 1"
-        if not self.output_name.strip():
-            return False, "Output name cannot be empty"
-        if not self.output_dir.strip():
-            return False, "Output directory cannot be empty"
-        return True, ""
+        if self.learning_rate <= 0:
+            return False, "Learning rate must be positive"
+        if self.max_seq_length < 128:
+            return False, "Max sequence length must be at least 128"
+        return True, "Configuration valid"
 
     def get_warnings(self) -> List[str]:
-        """
-        FEATURE 1: Pre-training validation warnings
-        Returns list of non-fatal configuration warnings
-        """
+        """Get configuration warnings"""
         warnings = []
-
-        # VRAM warning
-        if HAS_GPU:
-            estimated_vram = self._estimate_vram_simple()
-            if estimated_vram > GPU_MEMORY * 0.9:
-                warnings.append(f"High VRAM usage: ~{estimated_vram:.1f}GB (you have {GPU_MEMORY:.1f}GB)")
-            elif estimated_vram > GPU_MEMORY * 0.75:
-                warnings.append(f"VRAM usage may be tight: ~{estimated_vram:.1f}GB of {GPU_MEMORY:.1f}GB")
-
-        # Dataset size warnings
-        if os.path.exists(self.dataset_path):
-            try:
-                with open(self.dataset_path, 'r', encoding='utf-8') as f:
-                    lines = [l for l in f if l.strip()]
-                    if len(lines) < 10:
-                        warnings.append(f"Very small dataset ({len(lines)} examples) - results will be poor")
-                    elif len(lines) < 100:
-                        warnings.append(f"Small dataset ({len(lines)} examples) - consider adding more data")
-            except:
-                pass
-
-        # Learning rate warnings
+        if self.lora_rank > 128:
+            warnings.append(f"High LoRA rank ({self.lora_rank}) may increase training time")
+        if self.epochs > 3:
+            warnings.append(f"Many epochs ({self.epochs}) may lead to overfitting")
+        if self.batch_size * self.grad_accumulation > 32:
+            warnings.append(f"Large effective batch size ({self.batch_size * self.grad_accumulation})")
         if self.learning_rate > 5e-4:
-            warnings.append(f"Learning rate {self.learning_rate:.2e} is high - may cause instability")
-        elif self.learning_rate < 1e-6:
-            warnings.append(f"Learning rate {self.learning_rate:.2e} is very low - training may be slow")
-
-        # Sequence length on CPU
-        if not HAS_GPU and self.max_seq_length > 512:
-            warnings.append(f"Max sequence length {self.max_seq_length} on CPU will be extremely slow")
-
-        # LoRA alpha/rank ratio
-        if self.lora_alpha < self.lora_rank:
-            warnings.append(f"LoRA alpha ({self.lora_alpha}) < rank ({self.lora_rank}) - typically alpha >= rank")
-
-        # Batch size warnings
-        if self.batch_size > 8:
-            warnings.append(f"Batch size {self.batch_size} is quite high - watch for OOM errors")
-
-        # Gradient accumulation
-        effective_batch = self.batch_size * self.grad_accumulation
-        if effective_batch < 4:
-            warnings.append(f"Effective batch size {effective_batch} is very small - training may be unstable")
-
+            warnings.append(f"High learning rate ({self.learning_rate:.2e}) may cause instability")
+        if self.max_seq_length > 2048 and not HAS_GPU:
+            warnings.append(f"Long sequences ({self.max_seq_length}) will be very slow on CPU")
+        if HAS_GPU:
+            estimated_vram = self.estimate_vram_usage()
+            if estimated_vram > GPU_MEMORY:
+                warnings.append(f"Estimated VRAM ({estimated_vram:.1f}GB) exceeds available ({GPU_MEMORY:.1f}GB)")
         return warnings
 
-    def _estimate_vram_simple(self) -> float:
-        """Simple VRAM estimation for warnings"""
-        base_sizes = {"1b": 1.5, "2b": 2.5, "3b": 4.0, "7b": 8.0, "8b": 9.0, "13b": 14.0, "70b": 75.0}
-        model_lower = self.base_model.lower()
-        base_size = 8.0
-
-        for key, size in base_sizes.items():
-            if key in model_lower:
-                base_size = size
-                break
-
-        if "4bit" in model_lower or "bnb" in model_lower:
-            base_size *= 0.35
-
-        lora_overhead = (self.lora_rank / 64) * 0.5
-        return (base_size + lora_overhead) * self.batch_size * 1.2
-
-    def to_dict_for_audit(self) -> Dict:
-        """Export config for audit logging"""
-        d = asdict(self)
-        d["created_at"] = datetime.now().isoformat()
-        return d
-
-
-# ─── DATASET UTILITIES ────────────────────────────────────────────────
-
-class DatasetStats:
-    """FEATURE 2: Dataset validation and statistics"""
-
-    @staticmethod
-    def validate_and_analyze(dataset_path: str) -> Tuple[bool, str, Dict]:
-        """
-        Validate dataset and compute statistics
-        Returns: (is_valid, error_message, stats_dict)
-        """
-        try:
-            if not os.path.exists(dataset_path):
-                return False, "Dataset file not found", {}
-
-            stats = {
-                "total_examples": 0,
-                "avg_length": 0,
-                "min_length": float('inf'),
-                "max_length": 0,
-                "malformed_lines": 0,
-                "total_chars": 0,
-                "samples": []  # Store samples for preview
-            }
-
-            lengths = []
-
-            with open(dataset_path, 'r', encoding='utf-8') as f:
-                for line_num, line in enumerate(f, 1):
-                    line = line.strip()
-                    if not line:
-                        continue
-
-                    try:
-                        entry = json.loads(line)
-                        if "text" not in entry:
-                            stats["malformed_lines"] += 1
-                            continue
-
-                        text = entry["text"]
-                        text_len = len(text)
-                        lengths.append(text_len)
-                        stats["total_examples"] += 1
-                        stats["total_chars"] += text_len
-                        stats["min_length"] = min(stats["min_length"], text_len)
-                        stats["max_length"] = max(stats["max_length"], text_len)
-
-                        # Store first 10 samples for preview
-                        if len(stats["samples"]) < 10:
-                            stats["samples"].append({
-                                "text": text[:200] + "..." if len(text) > 200 else text,
-                                "length": text_len
-                            })
-
-                    except json.JSONDecodeError:
-                        stats["malformed_lines"] += 1
-
-            if stats["total_examples"] == 0:
-                return False, "No valid examples found in dataset", stats
-
-            stats["avg_length"] = stats["total_chars"] / stats["total_examples"]
-
-            if stats["min_length"] == float('inf'):
-                stats["min_length"] = 0
-
-            # Detect outliers
-            if stats["max_length"] > stats["avg_length"] * 5:
-                stats["has_outliers"] = True
-                stats[
-                    "outlier_warning"] = f"Some examples are {stats['max_length'] / stats['avg_length']:.1f}x longer than average"
-            else:
-                stats["has_outliers"] = False
-
-            return True, "", stats
-
-        except Exception as e:
-            return False, f"Error reading dataset: {str(e)}", {}
-
-    @staticmethod
-    def get_random_samples(dataset_path: str, n: int = 5) -> List[Dict]:
-        """Get random samples for preview panel"""
-        import random
-        samples = []
-        try:
-            with open(dataset_path, 'r', encoding='utf-8') as f:
-                lines = [l for l in f if l.strip()]
-
-            if len(lines) <= n:
-                sample_lines = lines
-            else:
-                sample_lines = random.sample(lines, n)
-
-            for line in sample_lines:
-                try:
-                    entry = json.loads(line.strip())
-                    if "text" in entry:
-                        samples.append({
-                            "text": entry["text"][:300] + "..." if len(entry["text"]) > 300 else entry["text"],
-                            "length": len(entry["text"])
-                        })
-                except:
-                    pass
-        except:
-            pass
-
-        return samples
-
-
-# ─── VRAM ESTIMATOR ───────────────────────────────────────────────────
-
-class VRAMEstimator:
-    """FEATURE 3: VRAM usage estimation"""
-
-    BASE_MODEL_SIZES = {
-        "1b": 1.5, "1.1b": 1.5, "2b": 2.5, "3b": 4.0,
-        "7b": 8.0, "8b": 9.0, "13b": 14.0, "70b": 75.0
-    }
-
-    @staticmethod
-    def estimate(config: TrainingConfig) -> Dict[str, Any]:
-        """
-        Estimate VRAM usage for configuration
-        Returns dict with estimated_gb, available_gb, warning, details
-        """
+    def estimate_vram_usage(self) -> float:
+        """Estimate VRAM usage in GB"""
         if not HAS_GPU:
-            return {
-                "estimated_gb": 0,
-                "available_gb": 0,
-                "warning": "No GPU detected - will use CPU",
-                "utilization_pct": 0,
-                "details": {}
-            }
+            return 0.0
+        base = 2.0
+        model = 4.0
+        batch = (self.batch_size * self.max_seq_length * 4) / (1024 ** 3)
+        lora = (self.lora_rank * 2 * 0.001)
+        grad = batch * self.grad_accumulation * 2
+        return min(base + model + batch + lora + grad, GPU_MEMORY * 0.95)
 
+
+# ═══════════════════════════════════════════════════════════════════════
+# DATASET HANDLER - OPTIMIZED FOR NTCOMPANION OUTPUT
+# ═══════════════════════════════════════════════════════════════════════
+
+class DatasetHandler:
+    """Handle NTCompanion datasets and other formats"""
+
+    @staticmethod
+    def detect_format(filepath: str) -> str:
+        """Detect dataset format"""
+        ext = Path(filepath).suffix.lower()
+        if ext == '.jsonl':
+            return 'jsonl'
+        elif ext == '.json':
+            return 'json'
+        elif ext == '.csv':
+            return 'csv'
         try:
-            # Detect model size
-            model_lower = config.base_model.lower()
-            base_size_gb = 8.0  # Default
-
-            for size_str, size_gb in VRAMEstimator.BASE_MODEL_SIZES.items():
-                if size_str in model_lower:
-                    base_size_gb = size_gb
-                    break
-
-            # Quantization reduction
-            if "4bit" in model_lower or "bnb" in model_lower:
-                base_size_gb *= 0.35
-                quant_factor = 0.35
+            with open(filepath, 'r', encoding='utf-8') as f:
+                first_line = f.readline().strip()
+            if first_line.startswith('{'):
+                try:
+                    json.loads(first_line)
+                    return 'jsonl'
+                except:
+                    return 'json'
+            elif first_line.startswith('['):
+                return 'json'
             else:
-                quant_factor = 1.0
+                return 'csv'
+        except:
+            return 'unknown'
 
-            # LoRA overhead (much smaller)
-            lora_params_gb = (config.lora_rank * config.lora_alpha / 1e9) * 4  # FP32 bytes
+    @staticmethod
+    def load_dataset(filepath: str) -> Tuple[Optional[List[Dict]], str]:
+        """
+        Load dataset - optimized for NTCompanion JSONL format
+        Expected format: {"text": "<formatted conversation>"}
+        """
+        try:
+            format_type = DatasetHandler.detect_format(filepath)
+            data = []
 
-            # Training overhead
-            # - Gradients: ~= model size
-            # - Optimizer states: ~2x gradients for Adam
-            # - Activations: batch_size dependent
+            if format_type == 'jsonl':
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        line = line.strip()
+                        if line:
+                            data.append(json.loads(line))
 
-            gradients_gb = base_size_gb * quant_factor * 0.5  # Gradients for trainable params
-            optimizer_gb = gradients_gb * 2  # Adam needs 2x gradient memory
-            activation_gb = config.batch_size * (config.max_seq_length / 2048) * 2.0
+            elif format_type == 'json':
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    loaded = json.load(f)
+                    if isinstance(loaded, list):
+                        data = loaded
+                    else:
+                        data = [loaded]
 
-            total_estimated = base_size_gb + lora_params_gb + gradients_gb + optimizer_gb + activation_gb
+            elif format_type == 'csv':
+                import csv
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    reader = csv.DictReader(f)
+                    data = list(reader)
 
-            available_gb = GPU_MEMORY
-            utilization_pct = (total_estimated / available_gb * 100) if available_gb > 0 else 0
+            else:
+                return None, f"Unknown format: {format_type}"
 
-            # Generate warning
-            warning = None
-            if utilization_pct > 95:
-                warning = "CRITICAL: Estimated VRAM exceeds available - will OOM"
-            elif utilization_pct > 85:
-                warning = "HIGH: VRAM usage very tight - reduce batch size if OOM occurs"
-            elif utilization_pct > 75:
-                warning = "MODERATE: VRAM usage high - monitor for OOM"
+            if not data:
+                return None, "Dataset is empty"
 
-            return {
-                "estimated_gb": total_estimated,
-                "available_gb": available_gb,
-                "utilization_pct": utilization_pct,
-                "warning": warning,
-                "details": {
-                    "base_model": base_size_gb,
-                    "lora": lora_params_gb,
-                    "gradients": gradients_gb,
-                    "optimizer": optimizer_gb,
-                    "activations": activation_gb,
-                    "quantization_factor": quant_factor
-                }
-            }
+            return data, "OK"
 
         except Exception as e:
-            return {
-                "estimated_gb": 0,
-                "available_gb": GPU_MEMORY,
-                "warning": f"Estimation error: {e}",
-                "utilization_pct": 0,
-                "details": {}
-            }
-
-
-# ─── PROGRESS CALLBACK ────────────────────────────────────────────────
-
-class EnhancedProgressCallback(TrainerCallback):
-    """FEATURE 4: Enhanced progress logging with ETA"""
-
-    def __init__(self, log_fn, progress_dict):
-        self.log_fn = log_fn
-        self.progress = progress_dict
-        self.start_time = None
-        self.last_log_step = 0
-        self.last_log_time = 0
-
-    def on_train_begin(self, args, state, control, **kwargs):
-        self.start_time = time.time()
-        self.last_log_time = self.start_time
-        self.log_fn("Training started...\n")
-
-    def on_log(self, args, state, control, logs=None, **kwargs):
-        if logs and state.global_step > 0:
-            self.progress["step"] = state.global_step
-            self.progress["total_steps"] = state.max_steps
-
-            # Log every 10 steps
-            if state.global_step - self.last_log_step >= 10 or state.global_step == state.max_steps:
-                loss = logs.get("loss", 0.0)
-                lr = logs.get("learning_rate", 0.0)
-                self.progress["loss"] = loss
-
-                # Calculate metrics
-                current_time = time.time()
-                elapsed = current_time - self.start_time
-                progress_pct = (state.global_step / state.max_steps * 100) if state.max_steps > 0 else 0
-
-                # ETA calculation
-                steps_done = state.global_step
-                steps_remaining = state.max_steps - steps_done
-
-                if steps_done > 0:
-                    time_per_step = elapsed / steps_done
-                    eta_seconds = steps_remaining * time_per_step
-                    eta_mins = eta_seconds / 60
-
-                    # Steps per second
-                    time_since_last_log = current_time - self.last_log_time
-                    steps_since_last_log = state.global_step - self.last_log_step
-                    steps_per_sec = steps_since_last_log / time_since_last_log if time_since_last_log > 0 else 0
-
-                    self.log_fn(
-                        f"[{progress_pct:5.1f}%] Step {state.global_step}/{state.max_steps} | "
-                        f"Loss: {loss:.4f} | LR: {lr:.2e} | "
-                        f"{steps_per_sec:.2f} steps/s | ETA: {eta_mins:.1f}min\n"
-                    )
-                else:
-                    self.log_fn(
-                        f"[{progress_pct:5.1f}%] Step {state.global_step}/{state.max_steps} | "
-                        f"Loss: {loss:.4f}\n"
-                    )
-
-                self.last_log_step = state.global_step
-                self.last_log_time = current_time
-
-    def on_train_end(self, args, state, control, **kwargs):
-        if self.start_time:
-            total_time = time.time() - self.start_time
-            self.log_fn(f"\nTraining completed in {total_time / 60:.2f} minutes ({total_time:.0f}s)\n")
-
-
-# ─── CHECKPOINT MANAGER ───────────────────────────────────────────────
-
-class CheckpointManager:
-    """FEATURE 6: Checkpoint resume and recovery"""
+            return None, f"Failed to load dataset: {str(e)}"
 
     @staticmethod
-    def find_latest_checkpoint(output_dir: Path) -> Optional[Path]:
-        """Find most recent checkpoint in output directory"""
-        try:
-            checkpoints = list(output_dir.glob("checkpoint-*"))
-            if checkpoints:
-                # Sort by step number
-                checkpoints.sort(key=lambda p: int(p.name.split('-')[1]))
-                return checkpoints[-1]
-        except:
-            pass
-        return None
+    def validate_dataset(data: List[Dict]) -> Tuple[bool, str, Dict[str, Any]]:
+        """Validate dataset structure - works with NTCompanion format"""
+        if not data:
+            return False, "Dataset is empty", {}
 
-    @staticmethod
-    def get_checkpoint_info(checkpoint_path: Path) -> Dict:
-        """Extract info from checkpoint"""
-        info = {"path": str(checkpoint_path), "step": 0}
-        try:
-            # Extract step number
-            step_str = checkpoint_path.name.split('-')[1]
-            info["step"] = int(step_str)
-
-            # Check for trainer state
-            trainer_state_path = checkpoint_path / "trainer_state.json"
-            if trainer_state_path.exists():
-                with open(trainer_state_path) as f:
-                    state = json.load(f)
-                    info["global_step"] = state.get("global_step", 0)
-                    info["epoch"] = state.get("epoch", 0)
-        except:
-            pass
-
-        return info
-
-    @staticmethod
-    def should_resume(checkpoint_path: Path, log_fn) -> bool:
-        """
-        Ask user if they want to resume (via log)
-        Returns True if checkpoint exists and is valid
-        """
-        if checkpoint_path and checkpoint_path.exists():
-            info = CheckpointManager.get_checkpoint_info(checkpoint_path)
-            log_fn(f"[!] Found checkpoint: {checkpoint_path.name}\n")
-            log_fn(f"    Step: {info.get('step', 'unknown')}\n")
-            log_fn(f"    Will resume training from this checkpoint\n")
-            return True
-        return False
-
-
-# ─── AUDIT LOGGER ─────────────────────────────────────────────────────
-
-class AuditLogger:
-    """FEATURE 11: Run manifest and audit logging"""
-
-    @staticmethod
-    def create_manifest(config: TrainingConfig, dataset_stats: Dict, vram_estimate: Dict,
-                        warnings: List[str], output_dir: Path) -> Dict:
-        """Create comprehensive run manifest"""
-        manifest = {
-            "run_id": datetime.now().strftime("%Y%m%d_%H%M%S"),
-            "timestamp": datetime.now().isoformat(),
-            "config": config.to_dict_for_audit(),
-            "hardware": {
-                "gpu_available": HAS_GPU,
-                "gpu_name": GPU_NAME,
-                "gpu_memory_gb": GPU_MEMORY,
-                "gpu_count": GPU_COUNT,
-            },
-            "dataset": {
-                "path": config.dataset_path,
-                "hash": compute_file_hash(config.dataset_path),
-                "stats": dataset_stats
-            },
-            "vram_estimate": vram_estimate,
-            "warnings": warnings,
-            "libraries": get_library_versions(),
-            "features_used": {
-                "unsloth": HAS_UNSLOTH,
-                "gpu_training": HAS_GPU
-            }
+        stats = {
+            "total_entries": len(data),
+            "avg_length": 0,
+            "min_length": float('inf'),
+            "max_length": 0,
+            "has_text_field": False,
+            "format_issues": []
         }
 
-        # Save manifest
-        manifest_path = output_dir / "run_manifest.json"
-        try:
-            output_dir.mkdir(parents=True, exist_ok=True)
-            with open(manifest_path, 'w') as f:
-                json.dump(manifest, f, indent=2)
-        except Exception as e:
-            print(f"Warning: Could not save manifest: {e}")
+        text_lengths = []
 
-        return manifest
+        for i, entry in enumerate(data[:100]):  # Sample first 100
+            if not isinstance(entry, dict):
+                stats["format_issues"].append(f"Entry {i} is not a dictionary")
+                continue
 
+            # NTCompanion format: {"text": "..."}
+            text = entry.get('text', '') or entry.get('content', '') or entry.get('prompt', '')
 
-# ─── AUTO TUNER ───────────────────────────────────────────────────────
+            if not text:
+                stats["format_issues"].append(f"Entry {i} has no text content")
+                continue
 
-class AutoTuner:
-    """FEATURE 12: Smart defaults and auto-tuning"""
+            stats["has_text_field"] = True
+            text_lengths.append(len(text))
+
+        if text_lengths:
+            stats["avg_length"] = sum(text_lengths) / len(text_lengths)
+            stats["min_length"] = min(text_lengths)
+            stats["max_length"] = max(text_lengths)
+
+        if not stats["has_text_field"]:
+            return False, "No valid text fields found in dataset", stats
+
+        if len(stats["format_issues"]) > len(data) * 0.5:
+            return False, "More than 50% of entries have format issues", stats
+
+        return True, "Dataset valid", stats
 
     @staticmethod
-    def suggest_config(base_config: TrainingConfig, dataset_stats: Dict) -> TrainingConfig:
-        """
-        Suggest optimized configuration based on hardware and dataset
-        """
-        tuned = TrainingConfig(**asdict(base_config))
-
-        if not HAS_GPU:
-            # CPU optimizations
-            tuned.batch_size = 1
-            tuned.grad_accumulation = 8
-            tuned.max_seq_length = min(512, tuned.max_seq_length)
-            tuned.lora_rank = min(16, tuned.lora_rank)
-            return tuned
-
-        # GPU optimizations
-        available_vram = GPU_MEMORY
-
-        # Adjust batch size based on VRAM
-        if available_vram >= 24:  # High-end GPU
-            tuned.batch_size = 4
-            tuned.grad_accumulation = 4
-            tuned.lora_rank = 64
-        elif available_vram >= 16:  # Mid-range GPU
-            tuned.batch_size = 2
-            tuned.grad_accumulation = 4
-            tuned.lora_rank = 32
-        elif available_vram >= 8:  # Entry-level GPU
-            tuned.batch_size = 1
-            tuned.grad_accumulation = 8
-            tuned.lora_rank = 16
-        else:  # Low VRAM
-            tuned.batch_size = 1
-            tuned.grad_accumulation = 16
-            tuned.lora_rank = 8
-
-        # Adjust sequence length based on dataset
-        if dataset_stats:
-            avg_len = dataset_stats.get("avg_length", 1000)
-            # Use 1.5x average length, capped
-            suggested_seq_len = min(4096, max(512, int(avg_len * 1.5)))
-            tuned.max_seq_length = suggested_seq_len
-
-        # Adjust learning rate based on model size
-        model_lower = base_config.base_model.lower()
-        if any(size in model_lower for size in ["70b", "65b"]):
-            tuned.learning_rate = 1e-5  # Lower LR for large models
-        elif any(size in model_lower for size in ["7b", "8b", "13b"]):
-            tuned.learning_rate = 2e-4  # Standard LR
-        else:
-            tuned.learning_rate = 3e-4  # Higher LR for small models
-
-        # Set LoRA alpha = 2 * rank (common practice)
-        tuned.lora_alpha = tuned.lora_rank * 2
-
-        return tuned
+    def preview_entries(data: List[Dict], count: int = 3) -> List[str]:
+        """Generate preview of dataset entries"""
+        previews = []
+        for i, entry in enumerate(data[:count]):
+            text = entry.get('text', '') or entry.get('content', '') or entry.get('prompt', '')
+            preview = f"Entry {i + 1}:\n"
+            preview += f"  Length: {len(text)} chars\n"
+            snippet = text[:300] + "..." if len(text) > 300 else text
+            preview += f"  Preview: {snippet}\n"
+            previews.append(preview)
+        return previews
 
 
-# ─── TRAINING MANAGER ─────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════
+# TRAINING MANAGER
+# ═══════════════════════════════════════════════════════════════════════
 
 class TrainingManager:
-    """Enhanced training manager with all features"""
+    """Manage training with comprehensive monitoring"""
 
     def __init__(self, log_callback):
         self.log = log_callback
         self.is_training = False
         self.should_stop = False
-        self.use_unsloth = HAS_UNSLOTH and HAS_GPU
-        self.training_progress = {"step": 0, "total_steps": 0, "loss": 0.0}
-        self.current_run_manifest = None
+        self.trainer = None
+        self.model = None
+        self.tokenizer = None
+        self.start_time = None
+        self.current_step = 0
+        self.total_steps = 0
+        self.last_loss = None
 
-    def log_message(self, msg: str, error: bool = False):
-        """Thread-safe logging"""
-        prefix = "[ERROR] " if error else ""
-        self.log(f"{prefix}{msg}\n")
+    def prepare_dataset(self, config: TrainingConfig) -> Tuple[Optional[Any], str]:
+        """Prepare NTCompanion dataset for training"""
+        self.log("Loading dataset...\n")
 
-    def load_model_unsloth(self, config: TrainingConfig):
-        """Load model using Unsloth (GPU only)"""
-        self.log_message(f"Loading model with Unsloth (GPU accelerated)")
-        model, tokenizer = FastLanguageModel.from_pretrained(
-            model_name=config.base_model,
-            max_seq_length=config.max_seq_length,
-            dtype=None,
-            load_in_4bit=True,
-        )
+        data, error = DatasetHandler.load_dataset(config.dataset_path)
+        if not data:
+            return None, error
 
-        model = FastLanguageModel.get_peft_model(
-            model,
-            r=config.lora_rank,
-            lora_alpha=config.lora_alpha,
-            lora_dropout=config.lora_dropout,
-            target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
-                            "gate_proj", "up_proj", "down_proj"],
-            bias="none",
-            use_gradient_checkpointing="unsloth",
-            random_state=42,
-        )
-        return model, tokenizer
+        self.log(f"Loaded {len(data)} entries\n")
 
-    def load_model_standard(self, config: TrainingConfig):
-        """Load model using standard transformers (CPU compatible)"""
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.log_message(f"Loading model with transformers (device: {device})")
+        valid, message, stats = DatasetHandler.validate_dataset(data)
+        if not valid:
+            return None, message
 
-        if not torch.cuda.is_available():
-            self.log_message("[!] WARNING: Training on CPU will be VERY slow!")
+        self.log(f"Dataset validated:\n")
+        self.log(f"  Total entries: {stats['total_entries']}\n")
+        self.log(f"  Avg length: {stats['avg_length']:.0f} chars\n")
+        self.log(f"  Range: {stats['min_length']}-{stats['max_length']} chars\n")
 
-        if torch.cuda.is_available():
-            from transformers import BitsAndBytesConfig
-            from peft import prepare_model_for_kbit_training
+        if stats['format_issues']:
+            self.log(f"  Warning: {len(stats['format_issues'])} entries with issues\n")
 
-            bnb_config = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_quant_type="nf4",
-                bnb_4bit_compute_dtype=torch.float16,
-                bnb_4bit_use_double_quant=True,
-            )
-            model = AutoModelForCausalLM.from_pretrained(
-                config.base_model,
-                quantization_config=bnb_config,
-                device_map="auto",
-                trust_remote_code=True,
-            )
-            model = prepare_model_for_kbit_training(model)
-        else:
-            model = AutoModelForCausalLM.from_pretrained(
-                config.base_model,
-                torch_dtype=torch.float32,
-                trust_remote_code=True,
-                low_cpu_mem_usage=True,
-            )
-            model = model.to(device)
-
-        tokenizer = AutoTokenizer.from_pretrained(
-            config.base_model,
-            trust_remote_code=True
-        )
-
-        if tokenizer.pad_token is None:
-            tokenizer.pad_token = tokenizer.eos_token
-
-        peft_config = LoraConfig(
-            r=config.lora_rank,
-            lora_alpha=config.lora_alpha,
-            lora_dropout=config.lora_dropout,
-            target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
-            bias="none",
-            task_type="CAUSAL_LM",
-        )
-
-        model = get_peft_model(model, peft_config)
-
-        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-        all_params = sum(p.numel() for p in model.parameters())
-        self.log_message(f"Trainable params: {trainable_params:,} / {all_params:,} "
-                         f"({100 * trainable_params / all_params:.2f}%)")
-
-        return model, tokenizer
-
-    def export_to_gguf_unsloth(self, model, tokenizer, config: TrainingConfig, gguf_dir):
-        """Export using Unsloth's built-in GGUF export"""
-        self.log_message("Exporting to GGUF format (Unsloth method)...")
         try:
-            model.save_pretrained_gguf(
-                str(gguf_dir),
-                tokenizer,
-                quantization_method=config.quant_method
-            )
-            return True
+            # NTCompanion format: Each entry already has formatted "text" field
+            processed_data = []
+            for entry in data:
+                text = entry.get('text', '') or entry.get('content', '') or entry.get('prompt', '')
+                if text:
+                    processed_data.append({'text': text})
+
+            dataset = Dataset.from_list(processed_data)
+            self.log(f"Dataset prepared: {len(dataset)} training examples\n")
+            return dataset, "OK"
+
         except Exception as e:
-            self.log_message(f"[ERROR] GGUF export failed: {e}", error=True)
-            return False
+            return None, f"Dataset preparation failed: {str(e)}"
 
-    def export_to_gguf_standard(self, model, tokenizer, config: TrainingConfig, gguf_dir):
-        """Export using manual merge + llama.cpp conversion"""
-        self.log_message("Saving merged model...")
-
-        try:
-            merged_dir = gguf_dir / "merged"
-            merged_dir.mkdir(parents=True, exist_ok=True)
-
-            model = model.merge_and_unload()
-            model.save_pretrained(str(merged_dir))
-            tokenizer.save_pretrained(str(merged_dir))
-
-            self.log_message(f"[OK] Merged model saved to: {merged_dir}")
-
-            # Create instruction file
-            instructions = f"""GGUF Conversion Instructions
-============================
-
-Your model has been trained and saved. To convert to GGUF:
-
-1. Install llama.cpp:
-   git clone https://github.com/ggerganov/llama.cpp
-   cd llama.cpp && make
-
-2. Convert to GGUF:
-   python llama.cpp/convert-hf-to-gguf.py {merged_dir} --outfile {gguf_dir}/model-f16.gguf --outtype f16
-
-3. Quantize:
-   llama.cpp/llama-quantize {gguf_dir}/model-f16.gguf {gguf_dir}/{config.quant_method}.gguf {config.quant_method}
-
-4. Import to Ollama:
-   cd {gguf_dir} && ollama create {config.output_name} -f Modelfile
-"""
-            (gguf_dir / "CONVERSION_INSTRUCTIONS.txt").write_text(instructions)
-            return True
-        except Exception as e:
-            self.log_message(f"[ERROR] Merge/save failed: {e}", error=True)
-            return False
-
-    def validate_export(self, gguf_dir: Path, config: TrainingConfig) -> bool:
-        """
-        FEATURE 10: Export validation and post-training sanity checks
-        """
-        self.log_message("Validating export...")
-
-        gguf_file = gguf_dir / f"{config.quant_method}.gguf"
-        modelfile = gguf_dir / "Modelfile"
-
-        # Check GGUF exists
-        if not gguf_file.exists():
-            self.log_message("[!] GGUF file not found - export may have failed")
-            return False
-
-        # Check file size
-        file_size_mb = gguf_file.stat().st_size / (1024 * 1024)
-        if file_size_mb < 10:
-            self.log_message(f"[!] GGUF file suspiciously small: {file_size_mb:.1f}MB")
-            return False
-
-        self.log_message(f"[OK] GGUF file validated: {file_size_mb:.1f}MB")
-
-        # Check Modelfile
-        if not modelfile.exists():
-            self.log_message("[!] Modelfile missing")
-            return False
-
-        self.log_message("[OK] Modelfile present")
-        return True
-
-    def test_ollama_import(self, gguf_dir: Path, config: TrainingConfig) -> bool:
-        """Test Ollama import (part of FEATURE 10)"""
-        self.log_message("Testing Ollama import...")
-
-        modelfile_path = gguf_dir / "Modelfile"
+    def load_model(self, config: TrainingConfig) -> Tuple[bool, str]:
+        """Load model with enhanced GPU support"""
+        self.log(f"Loading model: {config.base_model}\n")
+        self.log(f"Using backend: {GPU_TYPE} ({GPU_BACKEND})\n")
 
         try:
-            result = subprocess.run(
-                ["ollama", "create", config.output_name, "-f", str(modelfile_path)],
-                cwd=str(gguf_dir),
-                capture_output=True,
-                text=True,
-                timeout=300
-            )
-
-            if result.returncode == 0:
-                self.log_message(f"[OK] Model imported to Ollama successfully")
-                return True
+            if HAS_UNSLOTH and GPU_BACKEND == "cuda":
+                self.log("Using Unsloth (optimized for NVIDIA GPUs)...\n")
+                self.model, self.tokenizer = FastLanguageModel.from_pretrained(
+                    model_name=config.base_model,
+                    max_seq_length=config.max_seq_length,
+                    dtype=None,
+                    load_in_4bit=True,
+                )
+                self.model = FastLanguageModel.get_peft_model(
+                    self.model,
+                    r=config.lora_rank,
+                    lora_alpha=config.lora_alpha,
+                    lora_dropout=config.lora_dropout,
+                    target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
+                                    "gate_proj", "up_proj", "down_proj"],
+                    use_gradient_checkpointing="unsloth",
+                )
             else:
-                self.log_message(f"[!] Ollama import failed: {result.stderr}")
-                return False
-        except Exception as e:
-            self.log_message(f"[!] Ollama import error: {e}")
-            return False
+                backend_name = GPU_TYPE if HAS_GPU else "CPU"
+                self.log(f"Using standard Transformers ({backend_name})...\n")
 
-    def train(self, config: TrainingConfig):
-        """Main training function with all features"""
+                self.tokenizer = AutoTokenizer.from_pretrained(config.base_model)
+                device_map = get_device_map()
+                torch_dtype = get_torch_dtype()
+
+                self.log(f"Device: {device_map}, dtype: {torch_dtype}\n")
+
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    config.base_model,
+                    device_map=device_map,
+                    torch_dtype=torch_dtype,
+                )
+
+                lora_config = LoraConfig(
+                    r=config.lora_rank,
+                    lora_alpha=config.lora_alpha,
+                    lora_dropout=config.lora_dropout,
+                    target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+                    task_type="CAUSAL_LM",
+                )
+                self.model = get_peft_model(self.model, lora_config)
+
+            self.log("Model loaded successfully\n")
+
+            trainable = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+            total = sum(p.numel() for p in self.model.parameters())
+            self.log(f"Trainable params: {trainable:,} / {total:,} ({100 * trainable / total:.2f}%)\n")
+
+            return True, "OK"
+
+        except Exception as e:
+            error_msg = f"Model loading failed: {str(e)}"
+            self.log(f"ERROR: {error_msg}\n")
+            self.log(f"{traceback.format_exc()}\n")
+            return False, error_msg
+
+    def train(self, config: TrainingConfig) -> bool:
+        """Execute training with monitoring"""
         if not DEPS_AVAILABLE:
-            self.log_message("[ERROR] Missing dependencies!", error=True)
-            return
+            self.log("ERROR: Missing dependencies\n")
+            return False
+
+        self.is_training = True
+        self.should_stop = False
+        self.start_time = time.time()
 
         try:
-            self.is_training = True
-            self.log_message("=" * 60)
-            self.log_message(">> TRAINING STARTED")
-            self.log_message("=" * 60)
+            dataset, error = self.prepare_dataset(config)
+            if not dataset:
+                self.log(f"ERROR: {error}\n")
+                return False
 
-            # FEATURE 2: Dataset validation
-            self.log_message("Validating dataset...")
-            valid, error_msg, dataset_stats = DatasetStats.validate_and_analyze(config.dataset_path)
+            success, error = self.load_model(config)
+            if not success:
+                return False
 
-            if not valid:
-                self.log_message(f"[ERROR] {error_msg}", error=True)
-                return
+            self.total_steps = (len(dataset) // (config.batch_size * config.grad_accumulation)) * config.epochs
+            self.log(f"Total training steps: {self.total_steps}\n")
 
-            self.log_message(f"[OK] Dataset validated:")
-            self.log_message(f"   Examples: {dataset_stats['total_examples']:,}")
-            self.log_message(f"   Avg length: {dataset_stats['avg_length']:.0f} chars")
-            self.log_message(f"   Range: {dataset_stats['min_length']}-{dataset_stats['max_length']} chars")
-            if dataset_stats.get('has_outliers'):
-                self.log_message(f"   [!] {dataset_stats['outlier_warning']}")
-            if dataset_stats['malformed_lines'] > 0:
-                self.log_message(f"   [!] Skipped {dataset_stats['malformed_lines']} malformed lines")
-            self.log_message("")
-
-            # FEATURE 3: VRAM estimation
-            if HAS_GPU:
-                vram_est = VRAMEstimator.estimate(config)
-                self.log_message(f"VRAM estimate: {vram_est['estimated_gb']:.1f}GB / {vram_est['available_gb']:.1f}GB")
-                self.log_message(f"   Utilization: {vram_est['utilization_pct']:.1f}%")
-                if vram_est['warning']:
-                    self.log_message(f"   [!] {vram_est['warning']}")
-                self.log_message("")
-            else:
-                vram_est = {"estimated_gb": 0, "available_gb": 0, "warning": None}
-
-            # FEATURE 11: Create audit manifest
-            output_dir_base = Path(config.output_dir) / config.output_name
-            warnings = config.get_warnings()
-            self.current_run_manifest = AuditLogger.create_manifest(
-                config, dataset_stats, vram_est, warnings, output_dir_base
-            )
-            self.log_message("[OK] Run manifest created")
-            self.log_message("")
-
-            # Load model
-            if self.use_unsloth:
-                model, tokenizer = self.load_model_unsloth(config)
-            else:
-                model, tokenizer = self.load_model_standard(config)
-
-            if self.should_stop:
-                self.log_message("[!] Training cancelled by user")
-                return
-
-            # Load dataset
-            self.log_message(f"Loading dataset...")
-            if os.path.isdir(config.dataset_path):
-                dataset = load_dataset("json", data_dir=config.dataset_path, split="train")
-            else:
-                dataset = load_dataset("json", data_files=config.dataset_path, split="train")
-
-            self.log_message(f"[OK] Dataset loaded: {len(dataset):,} examples")
-
-            if self.should_stop:
-                return
-
-            # Setup trainer
-            training_output_dir = Path("./training_output") / config.output_name
-            training_output_dir.mkdir(parents=True, exist_ok=True)
-
-            # FEATURE 6: Check for checkpoints
-            latest_checkpoint = CheckpointManager.find_latest_checkpoint(training_output_dir)
-            resume_from_checkpoint = None
-
-            if latest_checkpoint:
-                if CheckpointManager.should_resume(latest_checkpoint, self.log_message):
-                    resume_from_checkpoint = str(latest_checkpoint)
-                    self.log_message("")
-
-            total_steps = (len(dataset) * config.epochs) // (config.batch_size * config.grad_accumulation)
-            self.log_message(f"Total training steps: {total_steps:,}")
-            self.log_message("")
+            optim = "adamw_8bit" if GPU_BACKEND == "cuda" else "adamw_torch"
 
             training_args = TrainingArguments(
+                output_dir=config.output_dir,
+                num_train_epochs=config.epochs,
                 per_device_train_batch_size=config.batch_size,
                 gradient_accumulation_steps=config.grad_accumulation,
-                num_train_epochs=config.epochs,
                 learning_rate=config.learning_rate,
                 warmup_steps=config.warmup_steps,
-                fp16=HAS_GPU and not torch.cuda.is_bf16_supported(),
-                bf16=HAS_GPU and torch.cuda.is_bf16_supported(),
                 logging_steps=config.logging_steps,
                 save_steps=config.save_steps,
-                output_dir=str(training_output_dir),
-                optim="adamw_8bit" if HAS_GPU else "adamw_torch",
-                weight_decay=0.01,
-                lr_scheduler_type="linear",
-                seed=42,
+                save_total_limit=3,
+                fp16=(GPU_BACKEND in ["cuda", "hip"]),
+                optim=optim,
                 report_to="none",
-                save_total_limit=2,
             )
 
-            trainer = SFTTrainer(
-                model=model,
-                tokenizer=tokenizer,
+            class ProgressCallback(TrainerCallback):
+                def __init__(self, manager):
+                    self.manager = manager
+
+                def on_log(self, args, state, control, logs=None, **kwargs):
+                    if logs:
+                        self.manager.current_step = state.global_step
+                        if 'loss' in logs:
+                            self.manager.last_loss = logs['loss']
+                        elapsed = time.time() - self.manager.start_time
+                        if state.global_step > 0:
+                            time_per_step = elapsed / state.global_step
+                            remaining = self.manager.total_steps - state.global_step
+                            eta = remaining * time_per_step
+                            self.manager.log(
+                                f"Step {state.global_step}/{self.manager.total_steps} | "
+                                f"Loss: {logs.get('loss', 0):.4f} | ETA: {format_time(eta)}\n"
+                            )
+
+                def on_epoch_end(self, args, state, control, **kwargs):
+                    self.manager.log(f"Epoch {int(state.epoch)} complete\n")
+
+            self.trainer = SFTTrainer(
+                model=self.model,
+                tokenizer=self.tokenizer,
+                args=training_args,
                 train_dataset=dataset,
                 dataset_text_field="text",
                 max_seq_length=config.max_seq_length,
-                args=training_args,
-                callbacks=[EnhancedProgressCallback(self.log_message, self.training_progress)],
+                callbacks=[ProgressCallback(self)],
             )
 
-            # Train
-            self.log_message(">> Starting training...")
-            self.log_message("=" * 60)
-            trainer.train(resume_from_checkpoint=resume_from_checkpoint)
-            self.log_message("=" * 60)
-            self.log_message("[OK] Training completed!")
+            self.log("=" * 60 + "\n")
+            self.log("Training started\n")
+            self.log("=" * 60 + "\n")
 
-            if self.should_stop:
-                self.log_message("[!] Training cancelled")
-                return
+            self.trainer.train()
 
-            # Export
-            self.log_message("")
-            gguf_dir = Path(config.output_dir) / config.output_name
-            gguf_dir.mkdir(parents=True, exist_ok=True)
+            if not self.should_stop:
+                self.log("=" * 60 + "\n")
+                self.log("Training complete!\n")
+                self.log("=" * 60 + "\n")
+                self.save_model(config)
 
-            export_success = False
-            if self.use_unsloth:
-                export_success = self.export_to_gguf_unsloth(model, tokenizer, config, gguf_dir)
-            else:
-                export_success = self.export_to_gguf_standard(model, tokenizer, config, gguf_dir)
-
-            # Create Modelfile
-            modelfile_path = gguf_dir / "Modelfile"
-            modelfile_content = f"""FROM ./{config.quant_method}.gguf
-SYSTEM "{config.system_prompt}"
-PARAMETER temperature 0.75
-PARAMETER top_p 0.9
-PARAMETER top_k 40
-"""
-            modelfile_path.write_text(modelfile_content)
-
-            # FEATURE 10: Validate export
-            if export_success:
-                validation_passed = self.validate_export(gguf_dir, config)
-                if validation_passed:
-                    import_success = self.test_ollama_import(gguf_dir, config)
-
-                    if import_success:
-                        self.log_message("")
-                        self.log_message("=" * 60)
-                        self.log_message("*** SUCCESS! Training and import complete!")
-                        self.log_message(f"Test with: ollama run {config.output_name}")
-                        self.log_message("=" * 60)
-                    else:
-                        self.log_message("\n[!] Ollama import failed - manual import required")
-                else:
-                    self.log_message("\n[!] Export validation failed - check files manually")
-            else:
-                self.log_message("\n[!] Export failed - see errors above")
+            return True
 
         except Exception as e:
-            self.log_message("", error=True)
-            self.log_message("=" * 60, error=True)
-            self.log_message(f"TRAINING FAILED", error=True)
-            self.log_message("=" * 60, error=True)
-            self.log_message(f"{type(e).__name__}: {str(e)}", error=True)
-            self.log_message("", error=True)
-            self.log_message("Traceback:", error=True)
-            self.log_message(traceback.format_exc(), error=True)
+            self.log(f"ERROR: Training failed\n{str(e)}\n{traceback.format_exc()}\n")
+            return False
+
         finally:
             self.is_training = False
-            self.should_stop = False
+            self.cleanup()
 
-    def start_training(self, config: TrainingConfig):
-        """Start training in background thread"""
-        if self.is_training:
-            self.log_message("[!] Training already in progress", error=True)
-            return
-
-        valid, error_msg = config.validate()
-        if not valid:
-            self.log_message(f"[ERROR] {error_msg}", error=True)
-            return
-
-        # FEATURE 1: Show warnings
-        warnings = config.get_warnings()
-        if warnings:
-            self.log_message("[!] Configuration warnings:")
-            for warning in warnings:
-                self.log_message(f"   - {warning}")
-            self.log_message("")
-
-        self.should_stop = False
-        thread = threading.Thread(target=self.train, args=(config,), daemon=True)
-        thread.start()
-
-    def stop_training(self):
-        """
-        FEATURE 7: Graceful stop with cleanup
-        """
-        if self.is_training:
-            self.log_message(">> Stopping training gracefully...")
-            self.log_message("   (will finish current step and save checkpoint)")
-            self.should_stop = True
-
-
-# ─── GUI APPLICATION ──────────────────────────────────────────────────
-
-class NTechLLMTunerGUI:
-    """Professional GUI with all features"""
-
-    def __init__(self):
-        self.config = TrainingConfig()
-        self.trainer: Optional[TrainingManager] = None
-        self.available_models = []
-        self.dataset_preview_window_open = False
-
-    def show_dataset_preview(self):
-        """FEATURE 8: Dataset preview panel"""
-        if not self.config.dataset_path or not os.path.exists(self.config.dataset_path):
-            self.append_log("[!] No dataset selected\n")
-            return
-
-        if self.dataset_preview_window_open:
-            return
-
-        # Get samples
-        samples = DatasetStats.get_random_samples(self.config.dataset_path, n=5)
-
-        if not samples:
-            self.append_log("[!] Could not load dataset samples\n")
-            return
-
-        # Create preview window
-        with dpg.window(label="Dataset Preview", modal=False, show=True,
-                        width=800, height=500, pos=(100, 100),
-                        on_close=lambda: setattr(self, 'dataset_preview_window_open', False)):
-
-            self.dataset_preview_window_open = True
-
-            dpg.add_text("Random samples from dataset:", color=(100, 200, 255))
-            dpg.add_separator()
-
-            for i, sample in enumerate(samples, 1):
-                with dpg.collapsing_header(label=f"Sample {i} ({sample['length']} chars)", default_open=(i == 1)):
-                    dpg.add_input_text(
-                        default_value=sample['text'],
-                        multiline=True,
-                        readonly=True,
-                        height=100,
-                        width=-1
-                    )
-
-            dpg.add_separator()
-            dpg.add_button(label="Close", callback=lambda: dpg.delete_item(dpg.get_item_parent(dpg.last_item())))
-
-    def auto_configure(self):
-        """FEATURE 12: Auto-tune configuration"""
-        self.append_log(">> Running auto-configuration...\n")
-
-        # Get dataset stats
-        if not self.config.dataset_path or not os.path.exists(self.config.dataset_path):
-            self.append_log("[!] Load a dataset first\n")
-            return
-
-        valid, error_msg, dataset_stats = DatasetStats.validate_and_analyze(self.config.dataset_path)
-
-        if not valid:
-            self.append_log(f"[!] Dataset validation failed: {error_msg}\n")
-            return
-
-        # Get current config from GUI
-        current_config = self.read_config_from_gui()
-
-        # Auto-tune
-        tuned_config = AutoTuner.suggest_config(current_config, dataset_stats)
-
-        # Update GUI
-        dpg.set_value("batch_size", tuned_config.batch_size)
-        dpg.set_value("grad_accumulation", tuned_config.grad_accumulation)
-        dpg.set_value("max_seq_length", tuned_config.max_seq_length)
-        dpg.set_value("lora_rank", tuned_config.lora_rank)
-        dpg.set_value("lora_alpha", tuned_config.lora_alpha)
-        dpg.set_value("learning_rate", tuned_config.learning_rate)
-
-        self.append_log("[OK] Configuration auto-tuned:\n")
-        self.append_log(f"   Batch size: {tuned_config.batch_size}\n")
-        self.append_log(f"   Grad accumulation: {tuned_config.grad_accumulation}\n")
-        self.append_log(f"   Sequence length: {tuned_config.max_seq_length}\n")
-        self.append_log(f"   LoRA rank: {tuned_config.lora_rank}\n")
-        self.append_log(f"   LoRA alpha: {tuned_config.lora_alpha}\n")
-        self.append_log(f"   Learning rate: {tuned_config.learning_rate:.2e}\n")
-
-    def drag_drop_callback(self, sender, app_data):
-        """Handle file drag and drop"""
+    def save_model(self, config: TrainingConfig):
+        """Save trained model"""
         try:
-            if not app_data:
-                return
+            self.log("Saving model...\n")
+            output_path = Path(config.output_dir) / config.output_name
+            output_path.mkdir(parents=True, exist_ok=True)
 
-            files = app_data if isinstance(app_data, list) else [app_data]
+            self.model.save_pretrained(str(output_path))
+            self.tokenizer.save_pretrained(str(output_path))
 
-            if len(files) > 0:
-                dropped_file = str(files[0]).replace('\\', '/')
+            self.log(f"Model saved to: {output_path}\n")
+            self.create_manifest(config, output_path)
 
-                if dropped_file.lower().endswith(('.json', '.jsonl')):
-                    dropped_file = dropped_file.replace('/', '\\')
-                    dpg.set_value("dataset_path", dropped_file)
-                    self.append_log(f"Dataset file dropped: {dropped_file}\n")
-                else:
-                    filename = dropped_file.split('/')[-1]
-                    self.append_log(f"[!] Invalid file type: {filename}\n")
-
-                if len(files) > 1:
-                    self.append_log(f"[i] Using first file only\n")
         except Exception as e:
-            self.append_log(f"[ERROR] {e}\n")
+            self.log(f"Save error: {str(e)}\n")
 
-    def model_selected_callback(self, sender, app_data):
-        """Handle model selection"""
-        if not app_data.startswith("---"):
-            dpg.set_value("base_model", app_data)
-            self.append_log(f">> Model selected: {app_data}\n")
-
-    def download_model(self):
-        """Download Ollama model"""
-        model_name = dpg.get_value("base_model_combo")
-
-        if model_name.startswith("---"):
-            return
-
-        if ":" in model_name and "/" not in model_name:
-            self.append_log(f">> Downloading model: {model_name}\n")
-
-            def download_thread():
-                try:
-                    result = subprocess.run(
-                        ["ollama", "pull", model_name],
-                        capture_output=True,
-                        text=True,
-                        timeout=1800
-                    )
-
-                    if result.returncode == 0:
-                        self.append_log(f"[OK] Model downloaded!\n")
-                        self.refresh_models()
-                    else:
-                        self.append_log(f"[ERROR] Download failed\n")
-                except Exception as e:
-                    self.append_log(f"[ERROR] {e}\n")
-
-            threading.Thread(target=download_thread, daemon=True).start()
-
-    def refresh_models(self):
-        """Refresh model list"""
-        self.available_models = get_popular_models()
-        if dpg.does_item_exist("base_model_combo"):
-            dpg.configure_item("base_model_combo", items=self.available_models)
-        self.append_log("Model list refreshed\n")
-
-    def append_log(self, text: str):
-        """Append to log"""
-        current = dpg.get_value("log")
-        dpg.set_value("log", current + text)
+    def create_manifest(self, config: TrainingConfig, output_path: Path):
+        """Create training manifest"""
         try:
-            dpg.set_y_scroll("log_window", -1.0)
+            manifest = {
+                "training_date": datetime.now().isoformat(),
+                "config": asdict(config),
+                "system_info": {
+                    "gpu_type": GPU_TYPE,
+                    "gpu_name": GPU_NAME,
+                    "gpu_memory": f"{GPU_MEMORY:.1f}GB",
+                    "backend": GPU_BACKEND,
+                },
+                "library_versions": get_library_versions(),
+                "dataset_hash": compute_file_hash(config.dataset_path),
+                "training_stats": {
+                    "total_steps": self.total_steps,
+                    "final_loss": self.last_loss,
+                    "duration": format_time(time.time() - self.start_time) if self.start_time else "N/A",
+                }
+            }
+
+            manifest_path = output_path / "training_manifest.json"
+            with open(manifest_path, 'w', encoding='utf-8') as f:
+                json.dump(manifest, f, indent=2)
+
+            self.log(f"Manifest saved: {manifest_path}\n")
+
+        except Exception as e:
+            self.log(f"Manifest error: {str(e)}\n")
+
+    def stop(self):
+        """Request training stop"""
+        self.should_stop = True
+        self.log("Stop requested - finishing current step...\n")
+
+    def cleanup(self):
+        """Cleanup resources"""
+        try:
+            if self.model:
+                del self.model
+            if self.tokenizer:
+                del self.tokenizer
+            if self.trainer:
+                del self.trainer
+            if HAS_TORCH and HAS_GPU:
+                if GPU_BACKEND == "cuda":
+                    torch.cuda.empty_cache()
+                elif GPU_BACKEND == "mps":
+                    torch.mps.empty_cache()
+            self.log("Cleanup complete\n")
         except:
             pass
 
-    def select_dataset_callback(self, sender, app_data):
-        """Dataset dialog callback"""
-        selections = app_data.get("selections", {})
-        if selections:
-            path = list(selections.values())[0]
-            dpg.set_value("dataset_path", path)
-            self.append_log(f"Selected dataset: {path}\n")
+
+# ═══════════════════════════════════════════════════════════════════════
+# GUI APPLICATION
+# ═══════════════════════════════════════════════════════════════════════
+
+class NTTunerGUI:
+    """Main GUI application - optimized for NTCompanion datasets"""
+
+    def __init__(self):
+        self.config = TrainingConfig()
+        self.trainer = None
+        self.available_models = []
+
+    def append_log(self, message: str):
+        """Append message to log"""
+        if dpg.does_item_exist("log"):
+            current = dpg.get_value("log")
+            dpg.set_value("log", current + message)
+            if dpg.does_item_exist("log_window"):
+                dpg.set_y_scroll("log_window", -1.0)
+
+    def read_config_from_gui(self):
+        """Read configuration from GUI"""
+        custom_model = dpg.get_value("base_model").strip()
+        if custom_model and not custom_model.startswith("---"):
+            self.config.base_model = custom_model
+        else:
+            combo_value = dpg.get_value("base_model_combo")
+            if combo_value and not combo_value.startswith("---"):
+                self.config.base_model = combo_value
+
+        self.config.dataset_path = dpg.get_value("dataset_path")
+        self.config.lora_rank = dpg.get_value("lora_rank")
+        self.config.lora_alpha = dpg.get_value("lora_alpha")
+        self.config.lora_dropout = dpg.get_value("lora_dropout")
+        self.config.epochs = dpg.get_value("epochs")
+        self.config.batch_size = dpg.get_value("batch_size")
+        self.config.grad_accumulation = dpg.get_value("grad_accumulation")
+        self.config.learning_rate = dpg.get_value("learning_rate")
+        self.config.warmup_steps = dpg.get_value("warmup_steps")
+        self.config.max_seq_length = dpg.get_value("max_seq_length")
+        self.config.output_name = dpg.get_value("output_name")
+        self.config.output_dir = dpg.get_value("output_dir")
+        self.config.save_steps = dpg.get_value("save_steps")
+        self.config.logging_steps = dpg.get_value("logging_steps")
+
+    def validate_and_warn(self) -> bool:
+        """Validate configuration"""
+        self.read_config_from_gui()
+        valid, message = self.config.validate()
+        if not valid:
+            self.append_log(f"[ERROR] {message}\n")
+            return False
+        self.append_log("[OK] Configuration valid\n")
+        warnings = self.config.get_warnings()
+        if warnings:
+            self.append_log("\n[!] WARNINGS:\n")
+            for warning in warnings:
+                self.append_log(f"  - {warning}\n")
+            self.append_log("\n")
+        return True
+
+    def start_training_callback(self):
+        """Start training"""
+        if not self.validate_and_warn():
+            return
+        if not DEPS_AVAILABLE:
+            self.append_log("[ERROR] Missing dependencies\n")
+            return
+        self.set_training_state(True)
+
+        def training_thread():
+            success = self.trainer.train(self.config)
+            dpg.configure_item("btn_start", enabled=True)
+            dpg.configure_item("btn_stop", enabled=False)
+            self.set_training_state(False)
+
+        threading.Thread(target=training_thread, daemon=True).start()
+
+    def stop_training_callback(self):
+        """Stop training"""
+        if self.trainer:
+            self.trainer.stop()
+
+    def set_training_state(self, is_training: bool):
+        """Lock/unlock UI"""
+        dpg.configure_item("btn_start", enabled=not is_training)
+        dpg.configure_item("btn_stop", enabled=is_training)
+
+    def auto_configure(self):
+        """Auto-configure based on hardware and dataset"""
+        self.append_log("Auto-configuring...\n")
+
+        dataset_path = dpg.get_value("dataset_path")
+        if not dataset_path or not os.path.exists(dataset_path):
+            self.append_log("[!] Load a dataset first\n")
+            return
+
+        data, error = DatasetHandler.load_dataset(dataset_path)
+        if not data:
+            self.append_log(f"[ERROR] {error}\n")
+            return
+
+        valid, message, stats = DatasetHandler.validate_dataset(data)
+        if not valid:
+            self.append_log(f"[ERROR] {message}\n")
+            return
+
+        # Configure based on GPU
+        if HAS_GPU:
+            if GPU_MEMORY >= 16:
+                dpg.set_value("batch_size", 2)
+                dpg.set_value("grad_accumulation", 8)
+                dpg.set_value("max_seq_length", 1024)
+                dpg.set_value("lora_rank", 64)
+            elif GPU_MEMORY >= 8:
+                dpg.set_value("batch_size", 1)
+                dpg.set_value("grad_accumulation", 8)
+                dpg.set_value("max_seq_length", 512)
+                dpg.set_value("lora_rank", 32)
+            else:
+                dpg.set_value("batch_size", 1)
+                dpg.set_value("grad_accumulation", 4)
+                dpg.set_value("max_seq_length", 256)
+                dpg.set_value("lora_rank", 16)
+        else:
+            dpg.set_value("batch_size", 1)
+            dpg.set_value("grad_accumulation", 2)
+            dpg.set_value("max_seq_length", 256)
+            dpg.set_value("lora_rank", 8)
+
+        # Configure epochs based on dataset size
+        if stats["total_entries"] < 100:
+            dpg.set_value("epochs", 3)
+        elif stats["total_entries"] < 1000:
+            dpg.set_value("epochs", 2)
+        else:
+            dpg.set_value("epochs", 1)
+
+        self.append_log("[OK] Auto-configuration complete\n")
+
+    def show_dataset_preview(self):
+        """Show dataset preview"""
+        dataset_path = dpg.get_value("dataset_path")
+        if not dataset_path or not os.path.exists(dataset_path):
+            self.append_log("[!] No dataset loaded\n")
+            return
+
+        data, error = DatasetHandler.load_dataset(dataset_path)
+        if not data:
+            self.append_log(f"[ERROR] {error}\n")
+            return
+
+        previews = DatasetHandler.preview_entries(data, count=3)
+
+        if dpg.does_item_exist("preview_window"):
+            dpg.delete_item("preview_window")
+
+        with dpg.window(label="Dataset Preview", tag="preview_window", width=700, height=500,
+                        pos=[200, 150], no_resize=True):
+            dpg.add_text(f"Dataset: {dataset_path}", color=[100, 200, 255])
+            dpg.add_text(f"Showing first 3 of {len(data)} entries")
+            dpg.add_separator()
+
+            with dpg.child_window(height=400, border=True):
+                for preview in previews:
+                    dpg.add_text(preview, wrap=0)
+                    dpg.add_separator()
 
     def show_file_dialog(self):
         dpg.show_item("file_dialog")
@@ -1313,65 +952,48 @@ class NTechLLMTunerGUI:
     def show_output_dir_dialog(self):
         dpg.show_item("output_dir_dialog")
 
-    def select_output_dir_callback(self, sender, app_data):
-        selections = app_data.get("selections", {})
+    def select_file_callback(self, sender, app_data):
+        selections = app_data["selections"]
         if selections:
-            path = list(selections.values())[0]
-            dpg.set_value("output_dir", path)
-            self.append_log(f">> Output directory: {path}\n")
+            filepath = list(selections.values())[0]
+            dpg.set_value("dataset_path", filepath)
+            self.append_log(f"Dataset selected: {filepath}\n")
 
-    def read_config_from_gui(self) -> TrainingConfig:
-        """Read config from GUI"""
-        return TrainingConfig(
-            base_model=dpg.get_value("base_model"),
-            dataset_path=dpg.get_value("dataset_path"),
-            system_prompt=dpg.get_value("system_prompt"),
-            lora_rank=dpg.get_value("lora_rank"),
-            lora_alpha=dpg.get_value("lora_alpha"),
-            lora_dropout=dpg.get_value("lora_dropout"),
-            epochs=dpg.get_value("epochs"),
-            batch_size=dpg.get_value("batch_size"),
-            grad_accumulation=dpg.get_value("grad_accumulation"),
-            learning_rate=dpg.get_value("learning_rate"),
-            warmup_steps=dpg.get_value("warmup_steps"),
-            max_seq_length=dpg.get_value("max_seq_length"),
-            output_name=dpg.get_value("output_name"),
-            output_dir=dpg.get_value("output_dir"),
-            quant_method=dpg.get_value("quant_method"),
-            save_steps=dpg.get_value("save_steps"),
-            logging_steps=dpg.get_value("logging_steps"),
-        )
+    def select_output_dir_callback(self, sender, app_data):
+        selections = app_data["selections"]
+        if selections:
+            dirpath = list(selections.values())[0]
+            dpg.set_value("output_dir", dirpath)
 
-    def set_training_ui_state(self, training: bool):
-        """FEATURE 5: Lock GUI during training"""
-        dpg.configure_item("btn_start", enabled=not training)
-        dpg.configure_item("btn_stop", enabled=training)
+    def model_selected_callback(self, sender, app_data):
+        if not app_data.startswith("---"):
+            dpg.set_value("base_model", app_data)
 
-        controls = [
-            "base_model_combo", "base_model", "dataset_path",
-            "system_prompt", "lora_rank", "lora_alpha", "lora_dropout",
-            "epochs", "batch_size", "grad_accumulation", "learning_rate",
-            "warmup_steps", "max_seq_length", "output_name", "output_dir",
-            "quant_method", "save_steps", "logging_steps"
-        ]
+    def refresh_models(self):
+        self.append_log("Refreshing models...\n")
+        self.available_models = get_popular_models()
+        if dpg.does_item_exist("base_model_combo"):
+            dpg.configure_item("base_model_combo", items=self.available_models)
 
-        for control in controls:
-            if dpg.does_item_exist(control):
-                try:
-                    dpg.configure_item(control, enabled=not training)
-                except:
-                    pass
+    def download_model(self):
+        model = dpg.get_value("base_model_combo")
+        if model.startswith("---") or "/" in model:
+            self.append_log("[!] Select an Ollama model\n")
+            return
 
-    def start_training_callback(self):
-        """Start training"""
-        config = self.read_config_from_gui()
-        self.set_training_ui_state(training=True)
-        self.trainer.start_training(config)
+        self.append_log(f"Downloading {model}...\n")
 
-    def stop_training_callback(self):
-        """Stop training"""
-        self.trainer.stop_training()
-        self.set_training_ui_state(training=False)
+        def download():
+            try:
+                result = subprocess.run(["ollama", "pull", model], capture_output=True, text=True, timeout=300)
+                if result.returncode == 0:
+                    self.append_log(f"[OK] {model} downloaded\n")
+                else:
+                    self.append_log(f"[ERROR] {result.stderr}\n")
+            except Exception as e:
+                self.append_log(f"[ERROR] {str(e)}\n")
+
+        threading.Thread(target=download, daemon=True).start()
 
     def clear_log_callback(self):
         dpg.set_value("log", "")
@@ -1379,47 +1001,54 @@ class NTechLLMTunerGUI:
     def save_config_callback(self):
         dpg.show_item("save_config_dialog")
 
-    def save_config_file(self, sender, app_data):
-        selections = app_data.get("selections", {})
-        if selections:
-            filepath = list(selections.values())[0]
-            if not filepath.lower().endswith('.json'):
-                filepath += '.json'
-
-            try:
-                config = self.read_config_from_gui()
-                with open(filepath, "w") as f:
-                    json.dump(asdict(config), f, indent=2)
-                self.append_log(f"[OK] Config saved to {filepath}\n")
-            except Exception as e:
-                self.append_log(f"[ERROR] {e}\n")
-
     def load_config_callback(self):
         dpg.show_item("load_config_dialog")
 
-    def load_config_file(self, sender, app_data):
-        selections = app_data.get("selections", {})
+    def save_config_file(self, sender, app_data):
+        selections = app_data["selections"]
         if selections:
-            path = list(selections.values())[0]
+            filepath = list(selections.values())[0]
             try:
-                with open(path) as f:
-                    data = json.load(f)
-                config = TrainingConfig(**data)
+                self.read_config_from_gui()
+                with open(filepath, 'w', encoding='utf-8') as f:
+                    json.dump(asdict(self.config), f, indent=2)
+                self.append_log(f"[OK] Config saved\n")
+            except Exception as e:
+                self.append_log(f"[ERROR] {str(e)}\n")
 
-                for key, value in asdict(config).items():
+    def load_config_file(self, sender, app_data):
+        selections = app_data["selections"]
+        if selections:
+            filepath = list(selections.values())[0]
+            try:
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                for key, value in data.items():
                     if dpg.does_item_exist(key):
                         dpg.set_value(key, value)
-
-                self.append_log(f"[OK] Loaded config from {path}\n")
+                self.append_log(f"[OK] Config loaded\n")
             except Exception as e:
-                self.append_log(f"[ERROR] {e}\n")
+                self.append_log(f"[ERROR] {str(e)}\n")
 
     def create_gui(self):
-        """Create GUI layout"""
+        """Create GUI"""
         dpg.create_context()
 
-        # Dialogs
-        with dpg.file_dialog(directory_selector=False, show=False, callback=self.select_dataset_callback,
+        with dpg.theme() as global_theme:
+            with dpg.theme_component(dpg.mvAll):
+                dpg.add_theme_color(dpg.mvThemeCol_WindowBg, [18, 18, 22])
+                dpg.add_theme_color(dpg.mvThemeCol_ChildBg, [25, 25, 30])
+                dpg.add_theme_color(dpg.mvThemeCol_Border, [50, 50, 60])
+                dpg.add_theme_color(dpg.mvThemeCol_FrameBg, [30, 30, 38])
+                dpg.add_theme_color(dpg.mvThemeCol_Button, [40, 40, 50])
+                dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, [55, 55, 70])
+                dpg.add_theme_color(dpg.mvThemeCol_Text, [220, 220, 230])
+                dpg.add_theme_style(dpg.mvStyleVar_WindowPadding, 15, 15)
+                dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 5)
+
+        dpg.bind_theme(global_theme)
+
+        with dpg.file_dialog(directory_selector=False, show=False, callback=self.select_file_callback,
                              tag="file_dialog", width=700, height=400):
             dpg.add_file_extension(".*")
             dpg.add_file_extension(".json", color=(150, 255, 150, 255))
@@ -1437,180 +1066,150 @@ class NTechLLMTunerGUI:
                              tag="load_config_dialog", width=700, height=400):
             dpg.add_file_extension(".json", color=(150, 255, 150, 255))
 
-        # Main window
-        with dpg.window(tag="main", label="NTech LLM Tuner - Professional Edition"):
-            dpg.add_text("Fine-tune LLMs with comprehensive validation and monitoring", color=(100, 200, 255))
+        with dpg.window(tag="main", label="NTTuner - Fine-Tuning for NTCompanion Datasets"):
+            with dpg.group(horizontal=True):
+                dpg.add_text("NTTuner Professional", color=[0, 180, 255])
+                dpg.add_text("| Optimized for NTCompanion", color=[120, 220, 140])
 
-            # Status
-            status = "GPU: " + (f"{GPU_NAME} ({GPU_MEMORY:.1f}GB)" if HAS_GPU else "None")
-            status += " | Unsloth: " + ("[OK]" if HAS_UNSLOTH else "[X]")
-            dpg.add_text(status, color=(150, 150, 150))
+            dpg.add_spacer(height=5)
+
+            status = f"GPU: {GPU_TYPE} - {GPU_NAME}"
+            if HAS_GPU:
+                status += f" ({GPU_MEMORY:.1f}GB)"
+            status += f" | Backend: {GPU_BACKEND}"
+            dpg.add_text(status, color=[0, 255, 100] if HAS_GPU else [255, 200, 100])
             dpg.add_separator()
 
-            # Model & Dataset
             with dpg.collapsing_header(label="Model & Dataset", default_open=True):
                 with dpg.group(horizontal=True):
-                    dpg.add_combo(label="Base Model", items=self.available_models, default_value=self.config.base_model,
-                                  tag="base_model_combo", width=300, callback=self.model_selected_callback)
+                    dpg.add_combo(label="Base Model", items=self.available_models,
+                                  default_value=self.config.base_model,
+                                  tag="base_model_combo", width=320, callback=self.model_selected_callback)
                     dpg.add_button(label="Refresh", callback=self.refresh_models, width=80)
                     dpg.add_button(label="Download", callback=self.download_model, width=80)
 
                 dpg.add_input_text(label="Custom Model", default_value=self.config.base_model, tag="base_model",
-                                   width=450)
+                                   width=500)
 
                 with dpg.group(horizontal=True):
-                    dpg.add_input_text(label="Dataset Path", default_value=self.config.dataset_path, tag="dataset_path",
-                                       width=350)
-                    dpg.add_button(label="Browse", callback=self.show_file_dialog)
-                    dpg.add_button(label="Preview", callback=self.show_dataset_preview)
+                    dpg.add_input_text(label="Dataset Path", default_value=self.config.dataset_path,
+                                       tag="dataset_path", width=380,
+                                       hint="NTCompanion JSONL format")
+                    dpg.add_button(label="Browse", callback=self.show_file_dialog, width=80)
+                    dpg.add_button(label="Preview", callback=self.show_dataset_preview, width=80)
 
-                dpg.add_input_text(label="System Prompt", default_value=self.config.system_prompt, tag="system_prompt",
-                                   multiline=True, height=60, width=600)
+                dpg.add_text("Note: NTCompanion datasets are pre-formatted with chat templates", 
+                             color=[150, 200, 150])
 
-            # LoRA
             with dpg.collapsing_header(label="LoRA Configuration"):
-                dpg.add_slider_int(label="LoRA Rank", default_value=self.config.lora_rank, min_value=8, max_value=256,
-                                   tag="lora_rank", width=300)
-                dpg.add_slider_int(label="LoRA Alpha", default_value=self.config.lora_alpha, min_value=8, max_value=512,
-                                   tag="lora_alpha", width=300)
-                dpg.add_slider_float(label="LoRA Dropout", default_value=self.config.lora_dropout, min_value=0.0,
-                                     max_value=0.5,
-                                     tag="lora_dropout", width=300)
+                with dpg.group(horizontal=True):
+                    dpg.add_slider_int(label="Rank", default_value=self.config.lora_rank, min_value=8,
+                                       max_value=256, tag="lora_rank", width=200)
+                    dpg.add_slider_int(label="Alpha", default_value=self.config.lora_alpha, min_value=8,
+                                       max_value=512, tag="lora_alpha", width=200)
+                dpg.add_slider_float(label="Dropout", default_value=self.config.lora_dropout, min_value=0.0,
+                                     max_value=0.5, tag="lora_dropout", width=300, format="%.3f")
 
-            # Training
             with dpg.collapsing_header(label="Training Parameters"):
                 with dpg.group(horizontal=True):
-                    dpg.add_slider_int(label="Epochs", default_value=self.config.epochs, min_value=1, max_value=10,
-                                       tag="epochs", width=150)
+                    dpg.add_slider_int(label="Epochs", default_value=self.config.epochs, min_value=1,
+                                       max_value=10, tag="epochs", width=150)
                     dpg.add_slider_int(label="Batch Size", default_value=self.config.batch_size, min_value=1,
                                        max_value=16, tag="batch_size", width=150)
+                    dpg.add_slider_int(label="Grad Accum", default_value=self.config.grad_accumulation,
+                                       min_value=1, max_value=32, tag="grad_accumulation", width=150)
 
                 with dpg.group(horizontal=True):
-                    dpg.add_slider_int(label="Grad Accumulation", default_value=self.config.grad_accumulation,
-                                       min_value=1,
-                                       max_value=32, tag="grad_accumulation", width=150)
                     dpg.add_input_float(label="Learning Rate", default_value=self.config.learning_rate,
-                                        tag="learning_rate",
-                                        width=150, format="%.2e")
-
-                with dpg.group(horizontal=True):
-                    dpg.add_slider_int(label="Warmup Steps", default_value=self.config.warmup_steps, min_value=0,
+                                        tag="learning_rate", width=150, format="%.2e")
+                    dpg.add_slider_int(label="Warmup", default_value=self.config.warmup_steps, min_value=0,
                                        max_value=500, tag="warmup_steps", width=150)
-                    dpg.add_slider_int(label="Max Seq Length", default_value=self.config.max_seq_length, min_value=128,
-                                       max_value=8192, tag="max_seq_length", width=150)
+                    dpg.add_slider_int(label="Max Seq Len", default_value=self.config.max_seq_length,
+                                       min_value=128, max_value=8192, tag="max_seq_length", width=150)
 
                 with dpg.group(horizontal=True):
                     dpg.add_slider_int(label="Save Steps", default_value=self.config.save_steps, min_value=10,
                                        max_value=1000, tag="save_steps", width=150)
-                    dpg.add_slider_int(label="Logging Steps", default_value=self.config.logging_steps, min_value=1,
+                    dpg.add_slider_int(label="Log Steps", default_value=self.config.logging_steps, min_value=1,
                                        max_value=100, tag="logging_steps", width=150)
 
-            # Output
             with dpg.collapsing_header(label="Output Configuration"):
-                dpg.add_input_text(label="Output Model Name", default_value=self.config.output_name, tag="output_name",
+                dpg.add_input_text(label="Model Name", default_value=self.config.output_name, tag="output_name",
                                    width=400)
-
                 with dpg.group(horizontal=True):
-                    dpg.add_input_text(label="Output Directory", default_value=self.config.output_dir, tag="output_dir",
-                                       width=350)
-                    dpg.add_button(label="Browse", callback=self.show_output_dir_dialog)
-
-                dpg.add_combo(label="Quantization", items=["q4_k_m", "q5_k_m", "q6_k", "q8_0", "f16"],
-                              default_value=self.config.quant_method, tag="quant_method", width=200)
+                    dpg.add_input_text(label="Output Dir", default_value=self.config.output_dir, tag="output_dir",
+                                       width=380)
+                    dpg.add_button(label="Browse", callback=self.show_output_dir_dialog, width=80)
 
             dpg.add_separator()
 
-            # Controls
             with dpg.group(horizontal=True):
                 dpg.add_button(label="Start Training", callback=self.start_training_callback, tag="btn_start",
-                               width=120, height=35)
-                dpg.add_button(label="Stop Training", callback=self.stop_training_callback, tag="btn_stop", width=120,
-                               height=35, enabled=False)
-                dpg.add_button(label="Auto-Configure", callback=self.auto_configure, width=120, height=35)
-                dpg.add_button(label="Clear Log", callback=self.clear_log_callback, width=100, height=35)
-                dpg.add_button(label="Save Config", callback=self.save_config_callback, width=100, height=35)
-                dpg.add_button(label="Load Config", callback=self.load_config_callback, width=100, height=35)
+                               width=130, height=40)
+                dpg.add_button(label="Stop", callback=self.stop_training_callback, tag="btn_stop", width=130,
+                               height=40, enabled=False)
+                dpg.add_button(label="Auto-Config", callback=self.auto_configure, width=130, height=40)
+                dpg.add_button(label="Clear Log", callback=self.clear_log_callback, width=100, height=40)
+                dpg.add_button(label="Save Config", callback=self.save_config_callback, width=100, height=40)
+                dpg.add_button(label="Load Config", callback=self.load_config_callback, width=100, height=40)
 
             dpg.add_separator()
 
-            # Log
-            dpg.add_text("Training Log:")
-            with dpg.child_window(tag="log_window", height=250, border=True):
-                dpg.add_text("", tag="log")
+            dpg.add_text("Training Log:", color=[150, 150, 160])
+            with dpg.child_window(tag="log_window", height=280, border=True):
+                dpg.add_text("", tag="log", wrap=0)
 
             dpg.add_separator()
-            dpg.add_text("NTech LLM Tuner Professional v2.0 | github.com/noosed", color=(100, 100, 100))
+            dpg.add_text("NTTuner Professional | Optimized for NTCompanion Datasets", color=[80, 80, 90])
 
-        dpg.create_viewport(title='NTech LLM Tuner Professional', width=1000, height=950)
+        dpg.create_viewport(title='NTTuner - Fine-Tuning Studio', width=1050, height=950)
         dpg.setup_dearpygui()
         dpg.show_viewport()
         dpg.set_primary_window("main", True)
 
-    def setup_drag_drop(self):
-        """Setup drag and drop"""
-        try:
-            dpg.set_viewport_drop_callback(self.drag_drop_callback)
-            return True
-        except:
-            return False
-
     def run(self):
-        """Run the application"""
+        """Run application"""
         self.trainer = TrainingManager(self.append_log)
         self.available_models = get_popular_models()
 
         self.create_gui()
-        drag_drop_enabled = self.setup_drag_drop()
 
-        # Startup
-        self.append_log("=" * 60 + "\n")
-        self.append_log("NTech LLM Tuner - Professional Edition\n")
-        self.append_log("=" * 60 + "\n")
-        self.append_log("FEATURES:\n")
-        self.append_log("  [OK] Pre-training validation with warnings\n")
-        self.append_log("  [OK] Dataset validation and statistics\n")
-        self.append_log("  [OK] VRAM usage estimation\n")
-        self.append_log("  [OK] Enhanced progress with ETA\n")
-        self.append_log("  [OK] GUI state locking during training\n")
-        self.append_log("  [OK] Checkpoint resume support\n")
-        self.append_log("  [OK] Graceful stop with cleanup\n")
-        self.append_log("  [OK] Dataset preview panel\n")
-        self.append_log("  [OK] Export validation\n")
-        self.append_log("  [OK] Run manifest logging\n")
-        self.append_log("  [OK] Auto-configuration\n")
-        self.append_log("=" * 60 + "\n\n")
+        self.append_log("=" * 70 + "\n")
+        self.append_log("NTTuner Professional - Optimized for NTCompanion\n")
+        self.append_log("=" * 70 + "\n")
+        self.append_log("GPU DETECTION:\n")
+
+        for detail in GPU_INFO["details"]:
+            self.append_log(f"  {detail}\n")
+
+        self.append_log("\nFEATURES:\n")
+        self.append_log("  ✓ NTCompanion JSONL format support\n")
+        self.append_log("  ✓ Enhanced GPU detection (CUDA/ROCm/MPS)\n")
+        self.append_log("  ✓ Dataset validation and statistics\n")
+        self.append_log("  ✓ VRAM usage estimation\n")
+        self.append_log("  ✓ Progress tracking with ETA\n")
+        self.append_log("  ✓ Auto-configuration\n")
+        self.append_log("=" * 70 + "\n\n")
+
+        if not DEPS_AVAILABLE:
+            self.append_log("[!] Missing dependencies\n")
+            self.append_log("Install: pip install torch transformers datasets trl peft\n\n")
 
         ollama_models = get_ollama_models()
         if ollama_models:
-            self.append_log(f"[OK] {len(ollama_models)} Ollama model(s) detected\n")
+            self.append_log(f"[OK] {len(ollama_models)} Ollama models found\n")
 
-        if not DEPS_AVAILABLE:
-            self.append_log("[ERROR] Missing dependencies\n")
-        else:
-            self.append_log(f"[OK] Dependencies loaded\n")
-            self.append_log(f"[OK] PyTorch {torch.__version__}\n")
-
-            if HAS_GPU:
-                self.append_log(f"[OK] GPU: {GPU_NAME} ({GPU_MEMORY:.1f}GB)\n")
-                self.append_log(f"[OK] CUDA {torch.version.cuda}\n")
-            else:
-                self.append_log("[!] No GPU - CPU training will be slow\n")
-
-            if HAS_UNSLOTH:
-                self.append_log("[OK] Unsloth available\n")
-
-            if drag_drop_enabled:
-                self.append_log("[OK] Drag & drop enabled\n")
-
-        self.append_log("\nReady! Configure and click 'Start Training'\n")
-        self.append_log("=" * 60 + "\n")
+        self.append_log("\nReady! Load NTCompanion dataset and start training\n")
+        self.append_log("=" * 70 + "\n")
 
         dpg.start_dearpygui()
         dpg.destroy_context()
 
 
-# ─── MAIN ─────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════
+# MAIN
+# ═══════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    app = NTechLLMTunerGUI()
+    app = NTTunerGUI()
     app.run()
