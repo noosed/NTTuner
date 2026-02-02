@@ -1,5 +1,5 @@
 # NTech LLM Tuner
-<img width="1059" height="978" alt="image" src="https://github.com/user-attachments/assets/0ccbcb97-22bf-4341-a55c-a911afba879a" />
+<img width="20" height="10" alt="image" src="https://github.com/user-attachments/assets/0ccbcb97-22bf-4341-a55c-a911afba879a" />
 
 A desktop GUI application for fine-tuning large language models and deploying them directly to Ollama. Built for ease of use, with support for both GPU and CPU training.
 
