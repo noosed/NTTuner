@@ -120,46 +120,72 @@ ollama create my-first-model -f Modelfile
 - Review [troubleshooting section](README.md#troubleshooting) 
 - Open an issue on GitHub if you're still stuck
 
+- PyTorch & GPU Setup
 
-# PyTorch - Choose ONE of the following:
-# ---------------------------------------
+Important: Install only ONE PyTorch option below.
+GPU users should not install PyTorch from requirements.txt.
 
-# Option 1: CPU-only PyTorch (not recommended for training)
-# torch>=2.1.0
-# torchvision>=0.16.0
-# torchaudio>=2.1.0
+- PyTorch Installation (Choose One)
+- Option 1: CPU-only (Not recommended for training)
+pip install torch>=2.1.0 torchvision>=0.16.0 torchaudio>=2.1.0
 
-# Option 2: CUDA 12.1 PyTorch (recommended for NVIDIA GPUs)
-# Install separately with:
-# pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
 
-# Option 3: CUDA 11.8 PyTorch (for older GPUs)
-# Install separately with:
-# pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+Use this only if you do not have an NVIDIA GPU.
 
-# GPU acceleration (optional but highly recommended for NVIDIA GPUs)
-# ------------------------------------------------------------------
-# bitsandbytes>=0.41.0
+- Option 2: CUDA 12.1 (Recommended for NVIDIA GPUs)
+pip install torch torchvision torchaudio \
+  --index-url https://download.pytorch.org/whl/cu121
 
-# Ultra-fast training (optional, requires CUDA GPU)
-# -------------------------------------------------
-# unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git
 
-# Installation Instructions
-# ========================
-#
-# Basic installation (CPU-only):
-#   pip install -r requirements.txt
-#   pip install torch torchvision torchaudio
-#
-# GPU installation (recommended):
-#   pip install -r requirements.txt
-#   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
-#   pip install bitsandbytes
-#   pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"
-#
-# Verify GPU detection:
-#   python check_gpu.py
+Recommended for most modern NVIDIA GPUs.
+
+- Option 3: CUDA 11.8 (Older NVIDIA GPUs)
+pip install torch torchvision torchaudio \
+  --index-url https://download.pytorch.org/whl/cu118
+
+
+Use this if CUDA 12.1 is not supported on your system.
+
+- GPU Acceleration (Optional but Recommended)
+
+For efficient low-memory training with NVIDIA GPUs:
+
+pip install bitsandbytes>=0.41.0
+
+- Ultra-Fast Training (Optional)
+
+Uses Unsloth for significantly faster LoRA fine-tuning
+- Requires a CUDA-enabled NVIDIA GPU.
+
+pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"
+
+- Base Dependencies
+
+Install the remaining project dependencies:
+
+pip install -r requirements.txt
+
+
+- requirements.txt intentionally does not include PyTorch
+to avoid conflicts between CPU / CUDA builds.
+
+- Installation Examples
+CPU-Only Setup
+pip install -r requirements.txt
+pip install torch torchvision torchaudio
+
+Recommended GPU Setup (CUDA 12.1)
+pip install -r requirements.txt
+pip install torch torchvision torchaudio \
+  --index-url https://download.pytorch.org/whl/cu121
+pip install bitsandbytes
+pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"
+
+🔍 Verify GPU Detection
+
+After installation, confirm PyTorch can see your GPU:
+
+python check_gpu.py
 
 
 ## What's Next?
