@@ -1,0 +1,19 @@
+{
+  "base_model": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+  "dataset_path": "example_dataset.jsonl",
+  "system_prompt": "You are a helpful AI assistant.",
+  "lora_rank": 32,
+  "lora_alpha": 64,
+  "lora_dropout": 0.0,
+  "epochs": 1,
+  "batch_size": 1,
+  "grad_accumulation": 4,
+  "learning_rate": 0.0002,
+  "warmup_steps": 10,
+  "max_seq_length": 512,
+  "output_name": "my-fine-tuned-model",
+  "output_dir": "./gguf_export",
+  "quant_method": "q5_k_m",
+  "save_steps": 100,
+  "logging_steps": 10
+}
