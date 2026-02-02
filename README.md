@@ -1,5 +1,5 @@
 <img width="1000" height="720" alt="image" src="https://github.com/user-attachments/assets/da945fa6-0bdb-4d7c-b209-4e73ca07824e" />
-## NTTuner - Professional LLM Fine-Tuning Studio
+ NTTuner - Professional LLM Fine-Tuning Studio
 
 <p align="center">
   <img src="https://img.shields.io/badge/Python-3.10+-blue.svg" alt="Python 3.10+">
