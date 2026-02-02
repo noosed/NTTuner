@@ -14,7 +14,7 @@ Before starting, verify you have:
 ### Step 1: Clone Repository
 
 ```bash
-git clone https://github.com/noosed/ntech-llm-tuner.git
+git clone https://github.com/noosed/nttuner.git
 cd ntech-llm-tuner
 ```
 
