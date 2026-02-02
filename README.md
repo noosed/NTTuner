@@ -246,8 +246,8 @@ Built with:
 
 ## Links
 
-- **Repository**: https://github.com/noosed/ntech-llm-tuner
-- **Issues**: https://github.com/noosed/ntech-llm-tuner/issues
+- **Repository**: https://github.com/noosed/nttuner
+- **Issues**: fork and fix!
 - **Ollama**: https://ollama.ai
 - **Unsloth**: https://github.com/unslothai/unsloth
 
