@@ -2,7 +2,7 @@
 GPU Detection Diagnostic Tool
 Checks if PyTorch can detect your NVIDIA GPU
 """
-
+import time 
 print("=" * 60)
 print("GPU Detection Diagnostic Tool")
 print("=" * 60)
@@ -83,3 +83,4 @@ if cuda_available:
         print(f"[ERROR] Failed to use GPU: {e}")
 
 print("\nDiagnostics complete!")
+time.sleep(1000)
