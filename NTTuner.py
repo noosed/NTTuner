@@ -1,20 +1,4 @@
 # -*- coding: utf-8 -*-
-"""
-NTTuner - Professional LLM Fine-Tuning Studio
-Optimized for NTCompanion datasets with enhanced GPU detection
-
-FEATURES:
-✓ Perfect compatibility with NTCompanion JSONL output
-✓ Enhanced GPU detection (CUDA/ROCm/MPS)
-✓ Dataset validation and statistics
-✓ VRAM usage estimation
-✓ Progress tracking with ETA
-✓ Auto-configuration based on hardware
-✓ Checkpoint resume and recovery
-✓ Multi-format dataset support (JSONL/JSON/CSV)
-✓ Blank system context support
-✓ Advanced GGUF export options (2026)
-"""
 
 import dearpygui.dearpygui as dpg
 import subprocess
@@ -32,9 +16,6 @@ import sys
 import shutil
 
 
-# ═══════════════════════════════════════════════════════════════════════
-# ENHANCED GPU DETECTION
-# ═══════════════════════════════════════════════════════════════════════
 
 def detect_gpu_comprehensive():
     """
@@ -136,10 +117,6 @@ GPU_MEMORY = GPU_INFO["gpu_memory"]
 GPU_COUNT = GPU_INFO["gpu_count"]
 GPU_BACKEND = GPU_INFO["backend"]
 
-
-# ═══════════════════════════════════════════════════════════════════════
-# DEPENDENCY CHECKS
-# ═══════════════════════════════════════════════════════════════════════
 
 def get_ollama_models():
     """Get list of installed Ollama models"""
