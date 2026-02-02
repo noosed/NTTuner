@@ -120,6 +120,48 @@ ollama create my-first-model -f Modelfile
 - Review [troubleshooting section](README.md#troubleshooting) 
 - Open an issue on GitHub if you're still stuck
 
+
+# PyTorch - Choose ONE of the following:
+# ---------------------------------------
+
+# Option 1: CPU-only PyTorch (not recommended for training)
+# torch>=2.1.0
+# torchvision>=0.16.0
+# torchaudio>=2.1.0
+
+# Option 2: CUDA 12.1 PyTorch (recommended for NVIDIA GPUs)
+# Install separately with:
+# pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+# Option 3: CUDA 11.8 PyTorch (for older GPUs)
+# Install separately with:
+# pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+
+# GPU acceleration (optional but highly recommended for NVIDIA GPUs)
+# ------------------------------------------------------------------
+# bitsandbytes>=0.41.0
+
+# Ultra-fast training (optional, requires CUDA GPU)
+# -------------------------------------------------
+# unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git
+
+# Installation Instructions
+# ========================
+#
+# Basic installation (CPU-only):
+#   pip install -r requirements.txt
+#   pip install torch torchvision torchaudio
+#
+# GPU installation (recommended):
+#   pip install -r requirements.txt
+#   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+#   pip install bitsandbytes
+#   pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"
+#
+# Verify GPU detection:
+#   python check_gpu.py
+
+
 ## What's Next?
 
 - Try different base models
