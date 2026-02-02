@@ -2,6 +2,15 @@
 """
 NTech LLM Tuner - GUI for fine-tuning LLMs and importing to Ollama
 Supports both GPU (Unsloth) and CPU (standard transformers) training
+
+IMPROVEMENTS IN THIS VERSION:
+- Pre-training validation with warnings
+- Dataset validation and statistics
+- VRAM usage estimation
+- Training progress callbacks with live updates
+- Better UI state management during training
+- Enhanced error handling and recovery
+- Improved logging and diagnostics
 """
 import dearpygui.dearpygui as dpg
 import subprocess
@@ -9,9 +18,10 @@ import os
 import json
 import threading
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List, Tuple
 from dataclasses import dataclass, asdict
 import traceback
+
 
 # ─── DEPENDENCY CHECKS ────────────────────────────────────────────────
 
@@ -37,6 +47,7 @@ def get_ollama_models():
     except (subprocess.TimeoutExpired, FileNotFoundError):
         pass
     return []
+
 
 def get_popular_models():
     """Get list of popular models for fine-tuning"""
@@ -69,26 +80,28 @@ def get_popular_models():
             "meta-llama/Llama-3.1-8B-Instruct",
         ]
     }
-    
+
     # Flatten into a single list with separators
     all_models = []
     for category, model_list in models.items():
         if model_list:  # Only add category if it has models
             all_models.append(f"--- {category} ---")
             all_models.extend(model_list)
-    
+
     return all_models
+
 
 try:
     import torch
+
     HAS_TORCH = True
     HAS_GPU = torch.cuda.is_available()
-    
+
     # GPU diagnostics
     if HAS_GPU:
         GPU_COUNT = torch.cuda.device_count()
         GPU_NAME = torch.cuda.get_device_name(0)
-        GPU_MEMORY = torch.cuda.get_device_properties(0).total_memory / (1024**3)  # GB
+        GPU_MEMORY = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)  # GB
     else:
         GPU_COUNT = 0
         GPU_NAME = "None"
@@ -102,6 +115,7 @@ except ImportError:
 
 try:
     from unsloth import FastLanguageModel
+
     HAS_UNSLOTH = True
 except (ImportError, NotImplementedError, RuntimeError) as e:
     HAS_UNSLOTH = False
@@ -109,9 +123,10 @@ except (ImportError, NotImplementedError, RuntimeError) as e:
 
 try:
     from trl import SFTTrainer
-    from transformers import TrainingArguments, AutoModelForCausalLM, AutoTokenizer
+    from transformers import TrainingArguments, AutoModelForCausalLM, AutoTokenizer, TrainerCallback
     from datasets import load_dataset
     from peft import LoraConfig, get_peft_model
+
     HAS_TRANSFORMERS = True
 except ImportError:
     HAS_TRANSFORMERS = False
@@ -123,26 +138,26 @@ DEPS_AVAILABLE = HAS_TORCH and HAS_TRANSFORMERS
 
 @dataclass
 class TrainingConfig:
-    """Training configuration with validation"""
-    base_model: str = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"  # Small default for CPU
+    """Training configuration with validation and warnings"""
+    base_model: str = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
     dataset_path: str = ""
     system_prompt: str = "You are a helpful assistant."
-    lora_rank: int = 32  # Lower default for CPU
+    lora_rank: int = 32
     lora_alpha: int = 64
     lora_dropout: float = 0.0
-    epochs: int = 1  # Lower default for testing
-    batch_size: int = 1  # Lower default for CPU
+    epochs: int = 1
+    batch_size: int = 1
     grad_accumulation: int = 4
     learning_rate: float = 2e-4
     warmup_steps: int = 10
-    max_seq_length: int = 512  # Lower default for CPU
+    max_seq_length: int = 512
     output_name: str = "my-fine-tuned-model"
-    output_dir: str = "./gguf_export"  # New: customizable output directory
+    output_dir: str = "./gguf_export"
     quant_method: str = "q5_k_m"
     save_steps: int = 100
     logging_steps: int = 10
-    
-    def validate(self) -> tuple[bool, str]:
+
+    def validate(self) -> Tuple[bool, str]:
         """Validate configuration"""
         if not self.base_model.strip():
             return False, "Base model name cannot be empty"
@@ -159,24 +174,233 @@ class TrainingConfig:
         if not self.output_dir.strip():
             return False, "Output directory cannot be empty"
         return True, ""
+    
+    def get_warnings(self) -> List[str]:
+        """Return list of configuration warnings (not errors)"""
+        warnings = []
+        
+        # VRAM estimation warning
+        if HAS_GPU and self.lora_rank > 64 and self.batch_size > 2:
+            warnings.append("High LoRA rank + batch size may exceed VRAM")
+        
+        # Dataset size warning
+        if os.path.exists(self.dataset_path):
+            try:
+                with open(self.dataset_path, 'r', encoding='utf-8') as f:
+                    lines = [l for l in f if l.strip()]
+                    if len(lines) < 10:
+                        warnings.append(f"Very small dataset ({len(lines)} examples) - results may be poor")
+                    elif len(lines) < 100:
+                        warnings.append(f"Small dataset ({len(lines)} examples) - consider adding more data")
+            except:
+                pass
+        
+        # Learning rate warning
+        if self.learning_rate > 5e-4:
+            warnings.append("Learning rate seems high - may cause instability")
+        elif self.learning_rate < 1e-6:
+            warnings.append("Learning rate seems low - training may be very slow")
+        
+        # Sequence length warning
+        if not HAS_GPU and self.max_seq_length > 512:
+            warnings.append("Long sequences on CPU will be extremely slow")
+        
+        # LoRA alpha/rank ratio
+        if self.lora_alpha < self.lora_rank:
+            warnings.append("LoRA alpha < rank - typically alpha should be >= rank")
+        
+        return warnings
+
+
+# ─── TRAINING PROGRESS CALLBACK ───────────────────────────────────────
+
+class ProgressLoggingCallback(TrainerCallback):
+    """Custom callback to log training progress with detailed metrics"""
+    def __init__(self, log_fn, progress_dict):
+        self.log_fn = log_fn
+        self.progress = progress_dict
+        self.last_log_step = 0
+        self.start_time = None
+    
+    def on_train_begin(self, args, state, control, **kwargs):
+        """Called at the beginning of training"""
+        import time
+        self.start_time = time.time()
+        self.log_fn("Training started...\n")
+    
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        """Called when logging occurs"""
+        if logs:
+            self.progress["step"] = state.global_step
+            self.progress["total_steps"] = state.max_steps
+            
+            # Log every 10 steps to avoid spam
+            if state.global_step - self.last_log_step >= 10 or state.global_step == state.max_steps:
+                loss = logs.get("loss", 0.0)
+                lr = logs.get("learning_rate", 0.0)
+                self.progress["loss"] = loss
+                
+                progress_pct = (state.global_step / state.max_steps * 100) if state.max_steps > 0 else 0
+                
+                # Calculate ETA
+                if self.start_time:
+                    import time
+                    elapsed = time.time() - self.start_time
+                    steps_done = state.global_step
+                    if steps_done > 0:
+                        steps_remaining = state.max_steps - steps_done
+                        time_per_step = elapsed / steps_done
+                        eta_seconds = steps_remaining * time_per_step
+                        eta_mins = eta_seconds / 60
+                        
+                        self.log_fn(
+                            f"[{progress_pct:5.1f}%] Step {state.global_step}/{state.max_steps} | "
+                            f"Loss: {loss:.4f} | LR: {lr:.2e} | ETA: {eta_mins:.1f}min\n"
+                        )
+                    else:
+                        self.log_fn(
+                            f"[{progress_pct:5.1f}%] Step {state.global_step}/{state.max_steps} | "
+                            f"Loss: {loss:.4f} | LR: {lr:.2e}\n"
+                        )
+                else:
+                    self.log_fn(
+                        f"[{progress_pct:5.1f}%] Step {state.global_step}/{state.max_steps} | "
+                        f"Loss: {loss:.4f}\n"
+                    )
+                
+                self.last_log_step = state.global_step
+    
+    def on_train_end(self, args, state, control, **kwargs):
+        """Called at the end of training"""
+        if self.start_time:
+            import time
+            total_time = time.time() - self.start_time
+            self.log_fn(f"\nTraining completed in {total_time/60:.1f} minutes\n")
 
 
 # ─── TRAINING LOGIC ───────────────────────────────────────────────────
 
 class TrainingManager:
-    """Handles training process in background thread"""
-    
+    """Handles training process in background thread with enhanced features"""
+
     def __init__(self, log_callback):
         self.log = log_callback
         self.is_training = False
         self.should_stop = False
         self.use_unsloth = HAS_UNSLOTH and HAS_GPU
-        
+        self.training_progress = {"step": 0, "total_steps": 0, "loss": 0.0}
+
     def log_message(self, msg: str, error: bool = False):
         """Thread-safe logging"""
-        prefix = "ERROR: " if error else ""
+        prefix = "[ERROR] " if error else ""
         self.log(f"{prefix}{msg}\n")
     
+    def validate_dataset(self, dataset_path: str) -> Tuple[bool, str, Dict]:
+        """
+        Validate dataset format and return statistics
+        Returns: (is_valid, error_message, stats_dict)
+        """
+        try:
+            if not os.path.exists(dataset_path):
+                return False, "Dataset file not found", {}
+            
+            stats = {
+                "total_examples": 0,
+                "avg_length": 0,
+                "min_length": float('inf'),
+                "max_length": 0,
+                "malformed_lines": 0,
+                "total_chars": 0
+            }
+            
+            lengths = []
+            
+            with open(dataset_path, 'r', encoding='utf-8') as f:
+                for line_num, line in enumerate(f, 1):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    
+                    try:
+                        entry = json.loads(line)
+                        if "text" not in entry:
+                            stats["malformed_lines"] += 1
+                            continue
+                        
+                        text_len = len(entry["text"])
+                        lengths.append(text_len)
+                        stats["total_examples"] += 1
+                        stats["total_chars"] += text_len
+                        stats["min_length"] = min(stats["min_length"], text_len)
+                        stats["max_length"] = max(stats["max_length"], text_len)
+                        
+                    except json.JSONDecodeError:
+                        stats["malformed_lines"] += 1
+            
+            if stats["total_examples"] == 0:
+                return False, "No valid examples found in dataset", stats
+            
+            stats["avg_length"] = stats["total_chars"] / stats["total_examples"] if stats["total_examples"] else 0
+            
+            if stats["min_length"] == float('inf'):
+                stats["min_length"] = 0
+            
+            return True, "", stats
+            
+        except Exception as e:
+            return False, f"Error reading dataset: {str(e)}", {}
+    
+    def estimate_vram_usage(self, config: TrainingConfig) -> Dict:
+        """Estimate VRAM usage for given configuration"""
+        if not HAS_GPU:
+            return {"estimated_gb": 0, "available_gb": 0, "warning": "No GPU detected"}
+        
+        try:
+            # Rough estimation based on model size and config
+            base_model_sizes = {
+                "1b": 1.5, "2b": 2.5, "3b": 4.0, "7b": 8.0, 
+                "8b": 9.0, "13b": 14.0, "70b": 75.0
+            }
+            
+            # Try to guess model size from name
+            model_name_lower = config.base_model.lower()
+            estimated_base_size = 8.0  # Default assumption
+            
+            for size_key, size_gb in base_model_sizes.items():
+                if size_key in model_name_lower:
+                    estimated_base_size = size_gb
+                    break
+            
+            # LoRA overhead (much smaller than base model)
+            lora_overhead = (config.lora_rank / 64) * 0.5
+            
+            # Batch size multiplier
+            batch_multiplier = config.batch_size * 1.2
+            
+            # 4-bit quantization reduces size significantly
+            if "4bit" in model_name_lower or "bnb" in model_name_lower:
+                estimated_base_size *= 0.35
+            
+            total_estimated = (estimated_base_size + lora_overhead) * batch_multiplier
+            
+            available_gb = GPU_MEMORY
+            
+            result = {
+                "estimated_gb": total_estimated,
+                "available_gb": available_gb,
+                "warning": None
+            }
+            
+            if total_estimated > available_gb * 0.9:
+                result["warning"] = "Estimated VRAM usage exceeds available memory - likely to OOM"
+            elif total_estimated > available_gb * 0.75:
+                result["warning"] = "High VRAM usage expected - reduce batch size if OOM occurs"
+            
+            return result
+            
+        except Exception as e:
+            return {"estimated_gb": 0, "available_gb": GPU_MEMORY, "warning": f"Estimation error: {e}"}
+
     def load_model_unsloth(self, config: TrainingConfig):
         """Load model using Unsloth (GPU only)"""
         self.log_message(f"Loading model with Unsloth (GPU accelerated)")
@@ -186,34 +410,34 @@ class TrainingManager:
             dtype=None,
             load_in_4bit=True,
         )
-        
+
         model = FastLanguageModel.get_peft_model(
             model,
             r=config.lora_rank,
             lora_alpha=config.lora_alpha,
             lora_dropout=config.lora_dropout,
             target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
-                           "gate_proj", "up_proj", "down_proj"],
+                            "gate_proj", "up_proj", "down_proj"],
             bias="none",
             use_gradient_checkpointing="unsloth",
             random_state=42,
         )
         return model, tokenizer
-    
+
     def load_model_standard(self, config: TrainingConfig):
         """Load model using standard transformers (CPU compatible)"""
         device = "cuda" if torch.cuda.is_available() else "cpu"
         self.log_message(f"Loading model with transformers (device: {device})")
-        
+
         if not torch.cuda.is_available():
             self.log_message("[!] WARNING: Training on CPU will be VERY slow!")
             self.log_message("[!] Consider using Google Colab (free GPU) or a cloud service")
-        
+
         # Load model
         if torch.cuda.is_available():
             from transformers import BitsAndBytesConfig
             from peft import prepare_model_for_kbit_training
-            
+
             bnb_config = BitsAndBytesConfig(
                 load_in_4bit=True,
                 bnb_4bit_quant_type="nf4",
@@ -236,15 +460,15 @@ class TrainingManager:
                 low_cpu_mem_usage=True,
             )
             model = model.to(device)
-        
+
         tokenizer = AutoTokenizer.from_pretrained(
             config.base_model,
             trust_remote_code=True
         )
-        
+
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
-        
+
         # Apply LoRA
         peft_config = LoraConfig(
             r=config.lora_rank,
@@ -254,17 +478,17 @@ class TrainingManager:
             bias="none",
             task_type="CAUSAL_LM",
         )
-        
+
         model = get_peft_model(model, peft_config)
-        
+
         # Log trainable parameters
         trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
         all_params = sum(p.numel() for p in model.parameters())
         self.log_message(f"Trainable params: {trainable_params:,} / {all_params:,} "
-                        f"({100 * trainable_params / all_params:.2f}%)")
-        
+                         f"({100 * trainable_params / all_params:.2f}%)")
+
         return model, tokenizer
-    
+
     def export_to_gguf_unsloth(self, model, tokenizer, config: TrainingConfig, gguf_dir):
         """Export using Unsloth's built-in GGUF export"""
         self.log_message("Exporting to GGUF format (Unsloth method)...")
@@ -273,20 +497,20 @@ class TrainingManager:
             tokenizer,
             quantization_method=config.quant_method
         )
-    
+
     def export_to_gguf_standard(self, model, tokenizer, config: TrainingConfig, gguf_dir):
         """Export using manual merge + llama.cpp conversion"""
         self.log_message("Saving merged model...")
-        
+
         # Merge LoRA and save
         merged_dir = gguf_dir / "merged"
         merged_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # Merge adapter with base model
         model = model.merge_and_unload()
         model.save_pretrained(str(merged_dir))
         tokenizer.save_pretrained(str(merged_dir))
-        
+
         self.log_message(f"[OK] Merged model saved to: {merged_dir}")
         self.log_message("")
         self.log_message("To convert to GGUF, you need llama.cpp:")
@@ -304,7 +528,7 @@ class TrainingManager:
         self.log_message(f"llama.cpp/llama-quantize {gguf_dir}/model-f16.gguf \\")
         self.log_message(f"  {gguf_dir}/{config.quant_method}.gguf {config.quant_method}")
         self.log_message("─" * 60)
-        
+
         # Create instruction file
         instructions = f"""GGUF Conversion Instructions
 ============================
@@ -347,7 +571,7 @@ Notes:
 """
         (gguf_dir / "CONVERSION_INSTRUCTIONS.txt").write_text(instructions)
         self.log_message(f"[OK] Instructions saved to: {gguf_dir / 'CONVERSION_INSTRUCTIONS.txt'}")
-        
+
     def train(self, config: TrainingConfig):
         """Main training function (runs in background thread)"""
         if not DEPS_AVAILABLE:
@@ -360,56 +584,80 @@ Notes:
                 self.log_message("For GPU support (faster):", error=True)
                 self.log_message("  pip install bitsandbytes", error=True)
             return
-            
+
         try:
             self.is_training = True
             self.log_message("=" * 60)
             self.log_message(">> TRAINING STARTED")
             self.log_message("=" * 60)
-            self.log_message(f"Mode: {' Unsloth (GPU)' if self.use_unsloth else '  Standard Transformers'}")
-            self.log_message(f"Device: {' CUDA GPU' if HAS_GPU else ' CPU (SLOW!)'}")
-            
+            self.log_message(f"Mode: {'Unsloth (GPU)' if self.use_unsloth else 'Standard Transformers'}")
+            self.log_message(f"Device: {'CUDA GPU' if HAS_GPU else 'CPU (SLOW!)'}")
+
             if not HAS_UNSLOTH and HAS_GPU:
                 self.log_message("")
-                self.log_message("[i]  Unsloth not available (using standard transformers)")
+                self.log_message("[i] Unsloth not available (using standard transformers)")
                 self.log_message("   Install for 2-5x faster training:")
                 self.log_message("   pip install unsloth")
-            
+
             self.log_message("=" * 60)
             self.log_message("")
             
+            # VRAM estimation (NEW)
+            if HAS_GPU:
+                vram_est = self.estimate_vram_usage(config)
+                self.log_message(f"VRAM estimate: {vram_est['estimated_gb']:.1f}GB / {vram_est['available_gb']:.1f}GB available")
+                if vram_est['warning']:
+                    self.log_message(f"[!] {vram_est['warning']}")
+                self.log_message("")
+
             # 1. Load model
             if self.use_unsloth:
                 model, tokenizer = self.load_model_unsloth(config)
             else:
                 model, tokenizer = self.load_model_standard(config)
-            
+
             if self.should_stop:
                 self.log_message("[!] Training cancelled by user")
                 return
-            
-            # 2. Load dataset
-            self.log_message(f" Loading dataset: {config.dataset_path}")
+
+            # 2. Validate and analyze dataset (NEW)
+            self.log_message(f"Validating dataset: {config.dataset_path}")
+            valid, error_msg, stats = self.validate_dataset(config.dataset_path)
+
+            if not valid:
+                self.log_message(f"[ERROR] Dataset validation failed: {error_msg}", error=True)
+                return
+
+            self.log_message(f"[OK] Dataset valid:")
+            self.log_message(f"   Examples: {stats['total_examples']:,}")
+            self.log_message(f"   Avg length: {stats['avg_length']:.0f} chars")
+            self.log_message(f"   Range: {stats['min_length']}-{stats['max_length']} chars")
+            if stats['malformed_lines'] > 0:
+                self.log_message(f"   [!] Skipped {stats['malformed_lines']} malformed lines")
+            self.log_message("")
+
+            # Load dataset
+            self.log_message(f"Loading dataset: {config.dataset_path}")
             if os.path.isdir(config.dataset_path):
                 dataset = load_dataset("json", data_dir=config.dataset_path, split="train")
             else:
                 dataset = load_dataset("json", data_files=config.dataset_path, split="train")
-            
+
             self.log_message(f"[OK] Dataset loaded: {len(dataset):,} examples")
-            
+
             if self.should_stop:
                 self.log_message("[!] Training cancelled by user")
                 return
-            
+
             # 3. Setup trainer
-            self.log_message("⚙️  Configuring trainer...")
+            self.log_message("Configuring trainer...")
             output_dir = Path("./training_output") / config.output_name
             output_dir.mkdir(parents=True, exist_ok=True)
-            
+
             # Calculate total steps
             total_steps = (len(dataset) * config.epochs) // (config.batch_size * config.grad_accumulation)
             self.log_message(f"   Total training steps: {total_steps:,}")
-            
+
             training_args = TrainingArguments(
                 per_device_train_batch_size=config.batch_size,
                 gradient_accumulation_steps=config.grad_accumulation,
@@ -428,7 +676,8 @@ Notes:
                 report_to="none",
                 save_total_limit=2,
             )
-            
+
+            # Create trainer with progress callback (NEW)
             trainer = SFTTrainer(
                 model=model,
                 tokenizer=tokenizer,
@@ -436,36 +685,37 @@ Notes:
                 dataset_text_field="text",
                 max_seq_length=config.max_seq_length,
                 args=training_args,
+                callbacks=[ProgressLoggingCallback(self.log_message, self.training_progress)],
             )
-            
+
             # 4. Train
             self.log_message("")
-            self.log_message(">>  Starting training...")
+            self.log_message(">> Starting training...")
             self.log_message("=" * 60)
             trainer.train()
             self.log_message("=" * 60)
             self.log_message("[OK] Training completed!")
-            
+
             if self.should_stop:
                 self.log_message("[!] Training cancelled by user")
                 return
-            
+
             # 5. Export
             self.log_message("")
             gguf_dir = Path(config.output_dir) / config.output_name
             gguf_dir.mkdir(parents=True, exist_ok=True)
-            
+
             if self.use_unsloth:
                 self.export_to_gguf_unsloth(model, tokenizer, config, gguf_dir)
             else:
                 self.export_to_gguf_standard(model, tokenizer, config, gguf_dir)
-            
+
             # 6. Create Modelfile
             self.log_message("")
-            self.log_message(" Creating Ollama Modelfile...")
+            self.log_message("Creating Ollama Modelfile...")
             modelfile_path = gguf_dir / "Modelfile"
             gguf_filename = f"{config.quant_method}.gguf"
-            
+
             modelfile_content = f"""FROM ./{gguf_filename}
 SYSTEM "{config.system_prompt}"
 PARAMETER temperature 0.75
@@ -474,7 +724,7 @@ PARAMETER top_k 40
 """
             modelfile_path.write_text(modelfile_content)
             self.log_message(f"[OK] Modelfile created: {modelfile_path}")
-            
+
             # 7. Import to Ollama (only if GGUF exists)
             gguf_file = gguf_dir / gguf_filename
             if gguf_file.exists():
@@ -486,7 +736,7 @@ PARAMETER top_k 40
                     capture_output=True,
                     text=True
                 )
-                
+
                 if result.returncode == 0:
                     self.log_message("")
                     self.log_message("=" * 60)
@@ -508,10 +758,10 @@ PARAMETER top_k 40
                 self.log_message("=" * 60)
                 self.log_message("[OK] Training complete!")
                 self.log_message("")
-                self.log_message("[!]  Manual GGUF conversion required")
+                self.log_message("[!] Manual GGUF conversion required")
                 self.log_message(f"   See: {gguf_dir / 'CONVERSION_INSTRUCTIONS.txt'}")
                 self.log_message("=" * 60)
-                
+
         except Exception as e:
             self.log_message("", error=True)
             self.log_message("=" * 60, error=True)
@@ -524,104 +774,108 @@ PARAMETER top_k 40
         finally:
             self.is_training = False
             self.should_stop = False
-    
+
     def start_training(self, config: TrainingConfig):
         """Start training in background thread"""
         if self.is_training:
             self.log_message("[!] Training already in progress", error=True)
             return
-            
+
+        # Validate configuration
         valid, error_msg = config.validate()
         if not valid:
             self.log_message(f"[ERROR] Invalid configuration: {error_msg}", error=True)
             return
         
+        # Show warnings (NEW)
+        warnings = config.get_warnings()
+        if warnings:
+            self.log_message("[!] Configuration warnings:")
+            for warning in warnings:
+                self.log_message(f"   - {warning}")
+            self.log_message("")
+
         self.should_stop = False
         thread = threading.Thread(target=self.train, args=(config,), daemon=True)
         thread.start()
-    
+
     def stop_training(self):
         """Request training stop"""
         if self.is_training:
-            self.log_message("  Stopping training (may take a moment)...")
+            self.log_message("Stopping training (may take a moment)...")
             self.should_stop = True
 
 
 # ─── GUI APPLICATION ──────────────────────────────────────────────────
 
 class OllamaTrainerGUI:
-    """Main GUI application"""
-    
+    """Main GUI application with enhanced UX"""
+
     def __init__(self):
         self.config = TrainingConfig()
         self.trainer: Optional[TrainingManager] = None
         self.available_models = []
-        
+
     def drag_drop_callback(self, sender, app_data):
         """Handle file drag and drop from file system onto viewport"""
-        # When files are dropped on viewport, app_data is a list of file paths
         try:
             if not app_data:
                 return
-                
+
             # Handle both list and single string formats
             files = app_data if isinstance(app_data, list) else [app_data]
-            
+
             # Process the first file
             if len(files) > 0:
                 dropped_file = files[0]
-                
-                # Normalize path (handle both forward and backslashes)
+
+                # Normalize path
                 dropped_file = str(dropped_file).replace('\\', '/')
-                
+
                 # Check if it's a JSON/JSONL file
                 if dropped_file.lower().endswith(('.json', '.jsonl')):
-                    # Convert back to Windows path format
                     dropped_file = dropped_file.replace('/', '\\')
                     dpg.set_value("dataset_path", dropped_file)
-                    self.append_log(f" Dataset file dropped: {dropped_file}\n")
+                    self.append_log(f"Dataset file dropped: {dropped_file}\n")
                 else:
                     filename = dropped_file.split('/')[-1]
-                    self.append_log(f"[!]️  Invalid file type: {filename}\n")
+                    self.append_log(f"[!] Invalid file type: {filename}\n")
                     self.append_log(f"   Please drop a .json or .jsonl file\n")
-                    
-                # Warn if multiple files
+
                 if len(files) > 1:
-                    self.append_log(f"[i]  Multiple files dropped, using first file only\n")
+                    self.append_log(f"[i] Multiple files dropped, using first file only\n")
         except Exception as e:
             self.append_log(f"[ERROR] Error processing dropped file: {e}\n")
-    
+
     def model_selected_callback(self, sender, app_data):
         """Handle model selection from dropdown"""
         if not app_data.startswith("---"):
             dpg.set_value("base_model", app_data)
             self.append_log(f">> Model selected: {app_data}\n")
-    
+
     def download_model(self):
         """Download the selected model using Ollama"""
         model_name = dpg.get_value("base_model_combo")
-        
-        # Skip if it's a separator or already downloaded
+
         if model_name.startswith("---"):
             return
-        
-        # Check if it's an Ollama model format (contains :)
+
+        # Check if it's an Ollama model format
         if ":" in model_name and "/" not in model_name:
             self.append_log(f">> Downloading model: {model_name}\n")
             self.append_log("This may take several minutes...\n")
-            
+
             def download_thread():
                 try:
                     result = subprocess.run(
                         ["ollama", "pull", model_name],
                         capture_output=True,
                         text=True,
-                        timeout=1800  # 30 minute timeout
+                        timeout=1800
                     )
-                    
+
                     if result.returncode == 0:
                         self.append_log(f"[OK] Model {model_name} downloaded successfully!\n")
-                        # Refresh model list
                         self.refresh_models()
                     else:
                         self.append_log(f"[ERROR] Failed to download: {result.stderr}\n")
@@ -629,46 +883,45 @@ class OllamaTrainerGUI:
                     self.append_log(f"[ERROR] Download timed out\n")
                 except Exception as e:
                     self.append_log(f"[ERROR] Download error: {e}\n")
-            
-            # Run in background
+
             thread = threading.Thread(target=download_thread, daemon=True)
             thread.start()
         else:
-            self.append_log(f"[i] '{model_name}' is a HuggingFace model - it will be downloaded automatically during training\n")
-    
+            self.append_log(
+                f"[i] '{model_name}' is a HuggingFace model - it will be downloaded automatically during training\n")
+
     def refresh_models(self):
         """Refresh the list of available models"""
         self.available_models = get_popular_models()
         if dpg.does_item_exist("base_model_combo"):
             dpg.configure_item("base_model_combo", items=self.available_models)
-        self.append_log(" Model list refreshed\n")
-        
+        self.append_log("Model list refreshed\n")
+
     def append_log(self, text: str):
         """Append text to log widget"""
         current = dpg.get_value("log")
         dpg.set_value("log", current + text)
-        # Auto-scroll to bottom of child window
         try:
             dpg.set_y_scroll("log_window", -1.0)
         except:
-            pass  # Ignore if scrolling not available yet
-    
+            pass
+
     def select_dataset_callback(self, sender, app_data):
         """File dialog callback"""
         selections = app_data.get("selections", {})
         if selections:
             path = list(selections.values())[0]
             dpg.set_value("dataset_path", path)
-            self.append_log(f" Selected dataset: {path}\n")
-    
+            self.append_log(f"Selected dataset: {path}\n")
+
     def show_file_dialog(self):
         """Show file picker"""
         dpg.show_item("file_dialog")
-    
+
     def show_output_dir_dialog(self):
         """Show output directory picker"""
         dpg.show_item("output_dir_dialog")
-    
+
     def select_output_dir_callback(self, sender, app_data):
         """Output directory dialog callback"""
         selections = app_data.get("selections", {})
@@ -676,7 +929,7 @@ class OllamaTrainerGUI:
             path = list(selections.values())[0]
             dpg.set_value("output_dir", path)
             self.append_log(f">> Output directory set: {path}\n")
-    
+
     def read_config_from_gui(self) -> TrainingConfig:
         """Read all values from GUI widgets"""
         return TrainingConfig(
@@ -699,37 +952,60 @@ class OllamaTrainerGUI:
             logging_steps=dpg.get_value("logging_steps"),
         )
     
+    def set_training_ui_state(self, training: bool):
+        """Enable/disable UI controls based on training state (NEW)"""
+        dpg.configure_item("btn_start", enabled=not training)
+        dpg.configure_item("btn_stop", enabled=training)
+        
+        # Disable configuration controls during training
+        controls_to_disable = [
+            "base_model_combo", "base_model", "dataset_path",
+            "system_prompt", "lora_rank", "lora_alpha", "lora_dropout",
+            "epochs", "batch_size", "grad_accumulation", "learning_rate",
+            "warmup_steps", "max_seq_length", "output_name", "output_dir",
+            "quant_method", "save_steps", "logging_steps"
+        ]
+        
+        for control in controls_to_disable:
+            if dpg.does_item_exist(control):
+                try:
+                    dpg.configure_item(control, enabled=not training)
+                except:
+                    pass
+
     def start_training_callback(self):
         """Start training button callback"""
         config = self.read_config_from_gui()
+        
+        # Disable all input controls during training (NEW)
+        self.set_training_ui_state(training=True)
+        
         self.trainer.start_training(config)
-        dpg.configure_item("btn_start", enabled=False)
-        dpg.configure_item("btn_stop", enabled=True)
-    
+
     def stop_training_callback(self):
         """Stop training button callback"""
         self.trainer.stop_training()
-        dpg.configure_item("btn_start", enabled=True)
-        dpg.configure_item("btn_stop", enabled=False)
-    
+        
+        # Re-enable controls after stopping (NEW)
+        self.set_training_ui_state(training=False)
+
     def clear_log_callback(self):
         """Clear log output"""
         dpg.set_value("log", "")
-    
+
     def save_config_callback(self):
         """Save current config to JSON - show dialog"""
         dpg.show_item("save_config_dialog")
-    
+
     def save_config_file(self, sender, app_data):
         """Actually save the config file"""
         selections = app_data.get("selections", {})
         if selections:
             filepath = list(selections.values())[0]
-            
-            # Ensure .json extension
+
             if not filepath.lower().endswith('.json'):
                 filepath += '.json'
-            
+
             try:
                 config = self.read_config_from_gui()
                 with open(filepath, "w") as f:
@@ -737,11 +1013,11 @@ class OllamaTrainerGUI:
                 self.append_log(f"[OK] Configuration saved to {filepath}\n")
             except Exception as e:
                 self.append_log(f"[ERROR] Failed to save config: {e}\n")
-    
+
     def load_config_callback(self):
         """Load config from JSON"""
         dpg.show_item("load_config_dialog")
-    
+
     def load_config_file(self, sender, app_data):
         """Actually load the config file"""
         selections = app_data.get("selections", {})
@@ -751,84 +1027,84 @@ class OllamaTrainerGUI:
                 with open(path) as f:
                     data = json.load(f)
                 config = TrainingConfig(**data)
-                
+
                 # Update all widgets
                 for key, value in asdict(config).items():
                     if dpg.does_item_exist(key):
                         dpg.set_value(key, value)
-                
-                self.append_log(f" Loaded configuration from {path}\n")
+
+                self.append_log(f"[OK] Loaded configuration from {path}\n")
             except Exception as e:
                 self.append_log(f"[ERROR] Failed to load config: {e}\n")
-    
+
     def create_gui(self):
         """Build the GUI layout"""
         dpg.create_context()
-        
+
         # File dialogs
         with dpg.file_dialog(
-            directory_selector=False,
-            show=False,
-            callback=self.select_dataset_callback,
-            tag="file_dialog",
-            width=700,
-            height=400
+                directory_selector=False,
+                show=False,
+                callback=self.select_dataset_callback,
+                tag="file_dialog",
+                width=700,
+                height=400
         ):
             dpg.add_file_extension(".*")
             dpg.add_file_extension(".json", color=(150, 255, 150, 255))
             dpg.add_file_extension(".jsonl", color=(150, 255, 150, 255))
-        
+
         with dpg.file_dialog(
-            directory_selector=True,
-            show=False,
-            callback=self.select_output_dir_callback,
-            tag="output_dir_dialog",
-            width=700,
-            height=400
+                directory_selector=True,
+                show=False,
+                callback=self.select_output_dir_callback,
+                tag="output_dir_dialog",
+                width=700,
+                height=400
         ):
-            pass  # Directory selector doesn't need file extensions
-        
+            pass
+
         with dpg.file_dialog(
-            directory_selector=False,
-            show=False,
-            callback=self.save_config_file,
-            tag="save_config_dialog",
-            width=700,
-            height=400,
-            default_filename="config.json"
-        ):
-            dpg.add_file_extension(".json", color=(150, 255, 150, 255))
-        
-        with dpg.file_dialog(
-            directory_selector=False,
-            show=False,
-            callback=self.load_config_file,
-            tag="load_config_dialog",
-            width=700,
-            height=400
+                directory_selector=False,
+                show=False,
+                callback=self.save_config_file,
+                tag="save_config_dialog",
+                width=700,
+                height=400,
+                default_filename="config.json"
         ):
             dpg.add_file_extension(".json", color=(150, 255, 150, 255))
-        
+
+        with dpg.file_dialog(
+                directory_selector=False,
+                show=False,
+                callback=self.load_config_file,
+                tag="load_config_dialog",
+                width=700,
+                height=400
+        ):
+            dpg.add_file_extension(".json", color=(150, 255, 150, 255))
+
         # Main window
-        with dpg.window(tag="main", label="NTech LLM Tuner"):
+        with dpg.window(tag="main", label="NTech LLM Tuner - Enhanced"):
             dpg.add_text("Fine-tune LLMs and import directly to Ollama", color=(100, 200, 255))
-            
+
             # System status
             if HAS_GPU:
                 status_text = f"System: GPU Detected - {GPU_NAME} ({GPU_MEMORY:.1f}GB) | "
             else:
                 status_text = "System: CPU Only (No GPU detected) | "
-            
+
             if HAS_UNSLOTH:
                 status_text += "Unsloth [OK]"
             elif HAS_GPU:
                 status_text += "Unsloth [X] (install for 2x speed)"
             else:
                 status_text += "Unsloth [X] (requires GPU)"
-            
+
             dpg.add_text(status_text, color=(150, 150, 150))
             dpg.add_separator()
-            
+
             # Model & Dataset
             with dpg.collapsing_header(label="Model & Dataset", default_open=True):
                 with dpg.group(horizontal=True):
@@ -852,7 +1128,7 @@ class OllamaTrainerGUI:
                         width=110,
                         height=23
                     )
-                
+
                 dpg.add_input_text(
                     label="Custom Model (optional)",
                     default_value=self.config.base_model,
@@ -860,12 +1136,12 @@ class OllamaTrainerGUI:
                     width=450,
                     hint="Type HuggingFace model name or select from dropdown above"
                 )
-                
-                dpg.add_text("[i] Tip: Select from dropdown or type custom model name", 
-                            color=(150, 150, 150))
-                
+
+                dpg.add_text("[Tip] Select from dropdown or type custom model name",
+                             color=(150, 150, 150))
+
                 dpg.add_spacer(height=10)
-                
+
                 with dpg.group(horizontal=True):
                     dpg.add_input_text(
                         label="Dataset Path",
@@ -874,15 +1150,10 @@ class OllamaTrainerGUI:
                         width=400
                     )
                     dpg.add_button(label="Browse...", callback=self.show_file_dialog)
-                
-                # Show tip based on drag-drop availability
-                if hasattr(self, 'has_drag_drop') and self.has_drag_drop:
-                    dpg.add_text("[i] Tip: Drag & drop .json/.jsonl file or click Browse", 
-                                color=(150, 150, 150))
-                else:
-                    dpg.add_text("[i] Tip: Click Browse to select your dataset file", 
-                                color=(150, 150, 150))
-                
+
+                dpg.add_text("[Tip] Drag & drop .json/.jsonl file or click Browse",
+                             color=(150, 150, 150))
+
                 dpg.add_input_text(
                     label="System Prompt",
                     default_value=self.config.system_prompt,
@@ -891,7 +1162,7 @@ class OllamaTrainerGUI:
                     height=80,
                     width=600
                 )
-            
+
             # LoRA Settings
             with dpg.collapsing_header(label="LoRA Configuration", default_open=True):
                 dpg.add_slider_int(
@@ -918,7 +1189,7 @@ class OllamaTrainerGUI:
                     tag="lora_dropout",
                     width=300
                 )
-            
+
             # Training Settings
             with dpg.collapsing_header(label="Training Parameters", default_open=True):
                 with dpg.group(horizontal=True):
@@ -938,7 +1209,7 @@ class OllamaTrainerGUI:
                         tag="batch_size",
                         width=150
                     )
-                
+
                 with dpg.group(horizontal=True):
                     dpg.add_slider_int(
                         label="Gradient Accumulation",
@@ -955,7 +1226,7 @@ class OllamaTrainerGUI:
                         width=150,
                         format="%.2e"
                     )
-                
+
                 with dpg.group(horizontal=True):
                     dpg.add_slider_int(
                         label="Warmup Steps",
@@ -973,7 +1244,7 @@ class OllamaTrainerGUI:
                         tag="max_seq_length",
                         width=150
                     )
-                
+
                 with dpg.group(horizontal=True):
                     dpg.add_slider_int(
                         label="Save Steps",
@@ -991,7 +1262,7 @@ class OllamaTrainerGUI:
                         tag="logging_steps",
                         width=150
                     )
-            
+
             # Output Settings
             with dpg.collapsing_header(label="Output Configuration", default_open=True):
                 dpg.add_input_text(
@@ -1000,7 +1271,7 @@ class OllamaTrainerGUI:
                     tag="output_name",
                     width=400
                 )
-                
+
                 with dpg.group(horizontal=True):
                     dpg.add_input_text(
                         label="Output Directory",
@@ -1009,7 +1280,7 @@ class OllamaTrainerGUI:
                         width=400
                     )
                     dpg.add_button(label="Browse...", callback=self.show_output_dir_dialog)
-                
+
                 dpg.add_combo(
                     label="Quantization Method",
                     items=["q4_k_m", "q5_k_m", "q6_k", "q8_0", "f16"],
@@ -1017,9 +1288,9 @@ class OllamaTrainerGUI:
                     tag="quant_method",
                     width=200
                 )
-            
+
             dpg.add_separator()
-            
+
             # Control buttons
             with dpg.group(horizontal=True):
                 dpg.add_button(
@@ -1055,25 +1326,25 @@ class OllamaTrainerGUI:
                     width=120,
                     height=40
                 )
-            
+
             dpg.add_separator()
-            
+
             # Log output
             dpg.add_text("Training Log:")
             with dpg.child_window(tag="log_window", height=250, border=True):
                 dpg.add_text("", tag="log")
-            
+
             dpg.add_separator()
-            
+
             # GitHub watermark
-            dpg.add_text("github.com/noosed", color=(100, 100, 100))
-        
+            dpg.add_text("github.com/noosed | Enhanced Version", color=(100, 100, 100))
+
         # Setup and run
-        dpg.create_viewport(title='NTech LLM Tuner', width=1000, height=900)
+        dpg.create_viewport(title='NTech LLM Tuner - Enhanced', width=1000, height=900)
         dpg.setup_dearpygui()
         dpg.show_viewport()
         dpg.set_primary_window("main", True)
-    
+
     def setup_drag_drop(self):
         """Set up file drop callback after viewport is ready"""
         try:
@@ -1081,40 +1352,47 @@ class OllamaTrainerGUI:
             return True
         except (AttributeError, SystemError):
             return False
-    
+
     def run(self):
         """Run the application"""
         self.trainer = TrainingManager(self.append_log)
-        
+
         # Load available models before creating GUI
         self.available_models = get_popular_models()
-        
+
         # Check if drag-and-drop is available
         self.has_drag_drop = hasattr(dpg, 'set_viewport_drop_callback')
-        
+
         self.create_gui()
-        
+
         # Try to enable drag-and-drop
         drag_drop_enabled = self.setup_drag_drop()
-        
+
         # Startup messages
         self.append_log("=" * 60 + "\n")
-        self.append_log("NTech LLM Tuner - Fine-tuning GUI\n")
+        self.append_log("NTech LLM Tuner - Enhanced Version\n")
         self.append_log("=" * 60 + "\n")
-        
+        self.append_log("NEW FEATURES:\n")
+        self.append_log("  - Pre-training validation with warnings\n")
+        self.append_log("  - Dataset validation and statistics\n")
+        self.append_log("  - VRAM usage estimation\n")
+        self.append_log("  - Live training progress with ETA\n")
+        self.append_log("  - UI controls locked during training\n")
+        self.append_log("=" * 60 + "\n\n")
+
         # Show detected Ollama models
         ollama_models = get_ollama_models()
         if ollama_models:
             self.append_log(f"[OK] Detected {len(ollama_models)} Ollama model(s):\n")
-            for model in ollama_models[:5]:  # Show first 5
-                self.append_log(f"  • {model}\n")
+            for model in ollama_models[:5]:
+                self.append_log(f"  - {model}\n")
             if len(ollama_models) > 5:
                 self.append_log(f"  ... and {len(ollama_models) - 5} more\n")
         else:
-            self.append_log("[i]  No Ollama models detected (Ollama may not be installed)\n")
-        
+            self.append_log("[i] No Ollama models detected (Ollama may not be installed)\n")
+
         self.append_log("\n")
-        
+
         if not DEPS_AVAILABLE:
             self.append_log("[ERROR] Missing dependencies!\n")
             self.append_log("\nInstall required packages:\n")
@@ -1123,12 +1401,12 @@ class OllamaTrainerGUI:
                 self.append_log("  pip install bitsandbytes\n")
         else:
             self.append_log(f"[OK] Dependencies loaded\n")
-            
+
             # Detailed GPU diagnostics
             self.append_log("\n--- GPU Diagnostics ---\n")
             self.append_log(f"PyTorch version: {torch.__version__}\n")
             self.append_log(f"CUDA available: {HAS_GPU}\n")
-            
+
             if HAS_GPU:
                 self.append_log(f"CUDA version: {torch.version.cuda}\n")
                 self.append_log(f"GPU count: {GPU_COUNT}\n")
@@ -1141,35 +1419,36 @@ class OllamaTrainerGUI:
                 self.append_log("\nTroubleshooting steps:\n")
                 self.append_log("1. Check if NVIDIA drivers are installed:\n")
                 self.append_log("   Open Command Prompt and run: nvidia-smi\n")
-                self.append_log("   (Should show your RTX 3080)\n\n")
+                self.append_log("   (Should show your GPU)\n\n")
                 self.append_log("2. You may have CPU-only PyTorch installed!\n")
                 self.append_log("   Uninstall and reinstall with CUDA support:\n")
                 self.append_log("   pip uninstall torch torchvision torchaudio\n")
-                self.append_log("   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121\n\n")
+                self.append_log(
+                    "   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121\n\n")
                 self.append_log("3. Restart this application after reinstalling\n")
-            
+
             self.append_log("--- End Diagnostics ---\n\n")
-            
+
             if HAS_UNSLOTH:
                 self.append_log(f"[OK] Unsloth available (2-5x faster training)\n")
             elif HAS_GPU:
-                self.append_log(f"[i]  Unsloth not installed (install for faster training)\n")
+                self.append_log(f"[i] Unsloth not installed (install for faster training)\n")
                 self.append_log(f"   pip install unsloth\n")
-            
+
             if drag_drop_enabled:
                 self.append_log(f"[OK] Drag & drop enabled\n")
             else:
-                self.append_log(f"[!]  Drag & drop not available (use Browse button)\n")
-            
+                self.append_log(f"[!] Drag & drop not available (use Browse button)\n")
+
             if not HAS_GPU:
-                self.append_log(f"\n[!]  WARNING: No GPU detected!\n")
+                self.append_log(f"\n[!] WARNING: No GPU detected!\n")
                 self.append_log(f"   Training will be extremely slow on CPU.\n")
                 self.append_log(f"   Consider using Google Colab or a cloud GPU.\n")
-        
+
         self.append_log("\n")
         self.append_log("Ready to train! Configure settings and click 'Start Training'.\n")
         self.append_log("=" * 60 + "\n")
-        
+
         dpg.start_dearpygui()
         dpg.destroy_context()
 
