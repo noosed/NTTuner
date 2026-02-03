@@ -47,6 +47,19 @@ Want multiple quantization sizes? Expand “Advanced GGUF Export”, check the b
 - GPU not found: Run `python check_gpu.py`
 - Out of memory: Reduce batch size to 1
 - Slow training: Install Unsloth, or use a cloud GPU
+- llama-quantize binary is not installed.
+The fix provides clear instructions when this error occurs:
+Quick Solution (Choose ONE):
+OPTION 1 (Easiest):
+bashpip install llama-cpp-python
+OPTION 2 (Build from source on Windows):
+bashgit clone https://github.com/ggerganov/llama.cpp
+cd llama.cpp
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release
+OPTION 3 (Download pre-built):
+Download from: https://github.com/ggerganov/llama.cpp/releases
+After installing via any option above, run NTTuner again and the GGUF export will work.
 
 Full docs: <README.md>
 
