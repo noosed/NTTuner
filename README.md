@@ -1,121 +1,79 @@
 <img width="1000" height="720" alt="image" src="https://github.com/user-attachments/assets/da945fa6-0bdb-4d7c-b209-4e73ca07824e" />
- NTTuner - Professional LLM Fine-Tuning Studio
+# NTTuner
 
-<p align="center">
-  <img src="https://img.shields.io/badge/Python-3.10+-blue.svg" alt="Python 3.10+">
-  <img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License">
-  <img src="https://img.shields.io/badge/GPU-CUDA%20%7C%20ROCm%20%7C%20MPS-orange.svg" alt="GPU Support">
-  <img src="https://img.shields.io/badge/Ollama-Integration-purple.svg" alt="Ollama">
-</p>
+A desktop application for fine-tuning large language models and deploying them to Ollama. Supports NVIDIA, AMD, and Apple Silicon GPUs, with CPU fallback for those without dedicated graphics.
 
-A professional desktop GUI application for fine-tuning large language models with LoRA and deploying them directly to Ollama. Features advanced GGUF export options, multi-GPU support, and seamless integration with the NTCompanion dataset engine.
+Built to work seamlessly with [NTCompanion](https://github.com/noosed/NTCompanion), which handles dataset creation through web scraping and data processing.
 
-
-## 🔗 Related Projects
-
-|Project                                                 |Description                                                                                  |
-|--------------------------------------------------------|---------------------------------------------------------------------------------------------|
-|**[NTCompanion](https://github.com/noosed/NTCompanion)**|Professional dataset engine for NTTuner - web scraping, data processing, and JSONL generation|
-|**[NTTuner](https://github.com/noosed/NTTuner)**        |This project - LLM fine-tuning GUI with Ollama integration                                   |
 
 -----
 
-## ✨ Features
+## What It Does
 
-### Core Training
+NTTuner takes a base language model (like Llama, Mistral, or Phi) and fine-tunes it on your custom dataset using LoRA. After training, it converts the model to GGUF format and imports it directly into Ollama so you can start using it immediately.
 
-- **LoRA Fine-tuning** - Efficient parameter-efficient training with configurable rank, alpha, and dropout
-- **Multi-GPU Support** - Automatic detection of CUDA (NVIDIA), ROCm (AMD), and MPS (Apple Silicon)
-- **Unsloth Integration** - 2-5x training speedup on supported NVIDIA GPUs
-- **CPU Fallback** - Full support for CPU-only training
-- **Real-time Progress** - Live training metrics with ETA estimation
-
-### Advanced GGUF Export *(New in 2026)*
-
-- **Full Quantization Control** - All llama.cpp quantization types (Q2_K through F32, IQ series, BF16)
-- **Batch Export** - Export multiple quantization levels in one operation
-- **Preset System** - Quick presets like “All K-Quants”, “Size Ladder”, “IQ Series”
-- **Importance Matrix Support** - Use imatrix files for optimized IQ quantization
-- **Custom Flags** - Pass-through arguments to llama-quantize
-- **Filename Patterns** - Customizable output naming with `{model_name}` and `{quant_type}` variables
-- **LoRA-Only Export** - Export adapter without merging (smaller files, runtime application)
-- **Auto Ollama Import** - Automatically register exported models with Ollama
-
-### Dataset Support
-
-- **NTCompanion Integration** - Perfect compatibility with NTCompanion JSONL output
-- **Multi-format Support** - JSONL, JSON, and CSV datasets
-- **Dataset Validation** - Automatic format detection and statistics
-- **Preview System** - Inspect dataset entries before training
-
-### User Experience
-
-- **Modern Dark UI** - Clean DearPyGui interface
-- **Configuration Management** - Save/load training configurations as JSON
-- **Auto-Configuration** - Hardware-aware automatic parameter tuning
-- **Detailed Logging** - Comprehensive training logs with timestamps
+The new Advanced GGUF Export feature gives you full control over quantization—choose from any llama.cpp quant type, export multiple sizes at once, or use importance matrices for better quality at smaller sizes.
 
 -----
 
-## 📦 Installation
+## Related Projects
 
-### Prerequisites
+- **[NTCompanion](https://github.com/noosed/NTCompanion)** - Dataset engine for NTTuner. Scrapes websites, processes content, and generates training-ready JSONL files.
 
-- Python 3.10 or higher
-- Ollama installed ([download here](https://ollama.ai))
-- NVIDIA GPU with CUDA (recommended) or AMD GPU with ROCm or Apple Silicon
+-----
 
-### Quick Install
+## Features
+
+**Training**
+
+- LoRA fine-tuning with configurable rank, alpha, and dropout
+- Automatic GPU detection (CUDA, ROCm, MPS)
+- Unsloth integration for 2-5x faster training on NVIDIA GPUs
+- Real-time progress with loss tracking and ETA
+- Auto-configuration based on your hardware
+
+**GGUF Export**
+
+- All llama.cpp quantization types (Q2_K through F32, IQ series, BF16)
+- Presets for common workflows (single quant, size ladder, full export)
+- Importance matrix support for IQ quantization
+- Custom filename patterns
+- LoRA-only export option
+- Automatic Ollama import
+
+**Dataset Support**
+
+- Native NTCompanion JSONL format
+- Also accepts JSON and CSV
+- Built-in validation and preview
+
+-----
+
+## Installation
+
+You’ll need Python 3.10+ and [Ollama](https://ollama.ai) installed.
 
 ```bash
-# Clone the repository
 git clone https://github.com/noosed/NTTuner.git
 cd NTTuner
 
-# Install core dependencies
 pip install torch transformers datasets trl peft accelerate dearpygui bitsandbytes
 ```
 
-### GPU-Specific Installation
-
-<details>
-<summary><b>NVIDIA CUDA (Recommended)</b></summary>
+For NVIDIA GPUs, also install Unsloth for faster training:
 
 ```bash
-# Install CUDA-enabled PyTorch
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
-
-# Install Unsloth for 2-5x faster training (optional but recommended)
 pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"
+```
 
-# For advanced GGUF export, install llama.cpp
+For advanced GGUF export features, you’ll need llama.cpp:
+
+```bash
 git clone https://github.com/ggerganov/llama.cpp
 cd llama.cpp && make -j
 ```
 
-</details>
-
-<details>
-<summary><b>AMD ROCm</b></summary>
-
-```bash
-# Install ROCm-enabled PyTorch
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm5.7
-```
-
-</details>
-
-<details>
-<summary><b>Apple Silicon (MPS)</b></summary>
-
-```bash
-# PyTorch with MPS support (included in standard install)
-pip install torch torchvision torchaudio
-```
-
-</details>
-
-### Verify Installation
+Verify your GPU is detected:
 
 ```bash
 python check_gpu.py
@@ -123,39 +81,16 @@ python check_gpu.py
 
 -----
 
-## 🚀 Quick Start
+## Basic Usage
 
-### 1. Launch NTTuner
+1. Run `python NTTuner.py`
+1. Select a base model from the dropdown or enter a HuggingFace model name
+1. Load your dataset (JSONL file with a `text` field per line)
+1. Click Auto-Config to set parameters based on your hardware
+1. Click Start Training
+1. When finished, your model is automatically available in Ollama
 
-```bash
-python NTTuner.py
-```
-
-### 2. Prepare Your Dataset
-
-Use **[NTCompanion](https://github.com/noosed/NTCompanion)** to create training datasets, or prepare a JSONL file manually:
-
-```jsonl
-{"text": "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are a helpful assistant.<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nWhat is machine learning?<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\nMachine learning is a subset of artificial intelligence...<|eot_id|>"}
-```
-
-### 3. Configure Training
-
-|Parameter    |Recommended|Description                                     |
-|-------------|-----------|------------------------------------------------|
-|LoRA Rank    |32-64      |Higher = more parameters, better quality, slower|
-|LoRA Alpha   |64-128     |Usually 2x the rank                             |
-|Epochs       |1-3        |More epochs risk overfitting                    |
-|Batch Size   |1-2        |Increase if VRAM allows                         |
-|Learning Rate|2e-4       |Lower for larger models                         |
-
-### 4. Train and Export
-
-1. Click **Start Training**
-1. Monitor progress in the log window
-1. Model automatically exports to GGUF and imports to Ollama
-
-### 5. Test Your Model
+Test it:
 
 ```bash
 ollama run your-model-name
@@ -163,149 +98,67 @@ ollama run your-model-name
 
 -----
 
-## 🔧 Advanced GGUF Export
+## Dataset Format
 
-The new Advanced GGUF Export panel provides full control over the quantization process.
+NTTuner expects JSONL files where each line has a `text` field containing the full conversation:
 
-### Enabling Advanced Export
+```jsonl
+{"text": "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are a helpful assistant.<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nWhat is Python?<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\nPython is a programming language...<|eot_id|>"}
+```
 
-1. Expand the **“Advanced GGUF Export”** section
-1. Check **“Use advanced GGUF export instead of default”**
-1. Configure your export options
+The easiest way to create these is with [NTCompanion](https://github.com/noosed/NTCompanion), which handles the formatting automatically.
 
-### Quantization Types
+-----
 
-|Category          |Types                                   |Use Case                                  |
-|------------------|----------------------------------------|------------------------------------------|
-|**K-Quants**      |Q2_K, Q3_K_M, Q4_K_M, Q5_K_M, Q6_K, Q8_0|General purpose, good quality/size balance|
-|**I-Quants**      |IQ2_M, IQ3_M, IQ4_XS, IQ4_NL            |Requires imatrix, best quality at size    |
-|**Legacy**        |Q4_0, Q4_1, Q5_0, Q5_1                  |Compatibility with older llama.cpp        |
-|**Full Precision**|F16, BF16, F32                          |Maximum quality, largest files            |
+## Advanced GGUF Export
 
-### Presets
+By default, NTTuner exports a single Q5_K_M quantization. For more control:
 
-|Preset                   |Outputs                                 |Best For                       |
-|-------------------------|----------------------------------------|-------------------------------|
-|Standard Quality (Q4_K_M)|Q4_K_M                                  |Daily use, good balance        |
-|High Quality (Q5_K_M)    |Q5_K_M                                  |Better quality, slightly larger|
-|Size Ladder (Q2→Q8)      |Q2_K, Q3_K_M, Q4_K_M, Q5_K_M, Q6_K, Q8_0|Testing different sizes        |
-|All K-Quants             |All K-quant variants                    |Comprehensive export           |
-|IQ Series                |IQ2_M, IQ3_M, IQ4_XS, IQ4_NL            |Best with imatrix              |
+1. Expand the “Advanced GGUF Export” section
+1. Check “Use advanced GGUF export instead of default”
+1. Choose a preset or select individual quantization types
 
-### Using Importance Matrix (imatrix)
+**Presets**
 
-For IQ quantization types, an importance matrix improves quality:
+|Preset                   |What It Exports                                     |
+|-------------------------|----------------------------------------------------|
+|Standard Quality (Q4_K_M)|Single Q4_K_M file, good balance of size and quality|
+|High Quality (Q5_K_M)    |Single Q5_K_M file, slightly better quality         |
+|Size Ladder (Q2→Q8)      |Q2_K, Q3_K_M, Q4_K_M, Q5_K_M, Q6_K, Q8_0            |
+|All K-Quants             |Every K-quant variant                               |
+|IQ Series                |IQ2_M, IQ3_M, IQ4_XS, IQ4_NL (best with imatrix)    |
+
+**Quantization Types**
+
+|Type  |Size        |Quality  |Notes                            |
+|------|------------|---------|---------------------------------|
+|Q2_K  |Smallest    |Lower    |For very constrained environments|
+|Q3_K_M|Small       |Moderate |Good for testing                 |
+|Q4_K_M|Medium      |Good     |Most common choice               |
+|Q5_K_M|Medium-Large|Better   |Recommended for quality          |
+|Q6_K  |Large       |High     |Near-F16 quality                 |
+|Q8_0  |Larger      |Very High|Minimal quality loss             |
+|F16   |Largest     |Maximum  |Full precision                   |
+
+**Using Importance Matrices**
+
+For IQ quantization types, an importance matrix improves output quality. Generate one with llama.cpp:
 
 ```bash
-# Generate imatrix with llama.cpp
 ./llama-imatrix -m model-f16.gguf -f calibration_data.txt -o model.imatrix
 ```
 
-Then specify the `.imatrix` or `.dat` file in the “Importance Matrix” field.
+Then specify the file in the “Importance Matrix” field.
 
-### Filename Patterns
+**Export Existing Models**
 
-Customize output filenames using variables:
-
-- `{model_name}` - Your output model name
-- `{quant_type}` - The quantization type (lowercase)
-
-Example: `{model_name}-{quant_type}` → `my-model-q4_k_m.gguf`
-
-### Export Without Training
-
-To re-export an existing trained model:
-
-1. Set the correct Output Dir and Model Name
-1. Configure GGUF export options
-1. Click **“Export GGUF Now (existing model)”**
+To re-export a previously trained model with different quantization settings, set the output directory and model name to match your existing model, configure your export options, and click “Export GGUF Now (existing model)”.
 
 -----
 
-## 📁 Project Structure
+## Configuration Tips
 
-```
-NTTuner/
-├── NTTuner.py              # Main application
-├── CUDA_wuda.py            # CUDA diagnostics utility
-├── check_gpu.py            # GPU detection script
-├── QUICKSTART.md           # Quick start guide
-├── README.md               # This file
-└── fine_tuned_output/      # Default output directory
-    └── your-model/
-        ├── adapter_config.json
-        ├── adapter_model.safetensors
-        ├── training_manifest.json
-        └── gguf/
-            ├── your-model-q4_k_m.gguf
-            ├── your-model-q5_k_m.gguf
-            └── Modelfile
-```
-
------
-
-## 🔍 Troubleshooting
-
-### GPU Not Detected
-
-```bash
-# Check NVIDIA drivers
-nvidia-smi
-
-# Verify PyTorch CUDA
-python -c "import torch; print(torch.cuda.is_available())"
-
-# Run diagnostics
-python check_gpu.py
-```
-
-### Out of Memory (OOM)
-
-- Reduce batch size to 1
-- Increase gradient accumulation (effective batch = batch_size × grad_accum)
-- Lower max sequence length
-- Reduce LoRA rank
-- Use a smaller base model
-
-### llama-quantize Not Found
-
-For advanced GGUF export, install llama.cpp:
-
-```bash
-git clone https://github.com/ggerganov/llama.cpp
-cd llama.cpp
-make -j
-
-# Add to PATH or specify in NTTuner
-export PATH=$PATH:$(pwd)
-```
-
-Or specify the full path in the “llama-quantize Path” field.
-
-### Training Very Slow
-
-- **CPU users**: Training on CPU is inherently slow; use Google Colab or cloud GPUs
-- **GPU users**:
-  - Install Unsloth for 2-5x speedup
-  - Verify GPU is being used: check log for “Using backend: CUDA”
-  - Monitor with `nvidia-smi`
-
------
-
-## 📊 Hardware Guidelines
-
-### VRAM Requirements
-
-|Model Size|Minimum VRAM|Recommended|Training Time*|
-|----------|------------|-----------|--------------|
-|1B params |4GB         |8GB        |30-60 min     |
-|3B params |8GB         |12GB       |1-2 hours     |
-|7B params |12GB        |16GB       |2-4 hours     |
-|13B params|16GB        |24GB       |4-8 hours     |
-
-*Estimates for 1 epoch, 1000 examples, with Unsloth on RTX 3080
-
-### Recommended Settings by VRAM
+**By VRAM**
 
 |VRAM |Batch Size|Grad Accum|Max Seq Len|LoRA Rank|
 |-----|----------|----------|-----------|---------|
@@ -314,50 +167,75 @@ Or specify the full path in the “llama-quantize Path” field.
 |12GB |1         |8         |1024       |64       |
 |16GB+|2         |8         |2048       |64-128   |
 
------
+**General Guidelines**
 
-## 🤝 Contributing
-
-Contributions are welcome! Please feel free to submit issues and pull requests.
-
-1. Fork the repository
-1. Create your feature branch (`git checkout -b feature/amazing-feature`)
-1. Commit your changes (`git commit -m 'Add amazing feature'`)
-1. Push to the branch (`git push origin feature/amazing-feature`)
-1. Open a Pull Request
+- Start with Auto-Config and adjust from there
+- Higher LoRA rank = more trainable parameters = better results but slower
+- More epochs can improve quality but risk overfitting (1-3 is usually enough)
+- If you run out of memory, reduce batch size first, then sequence length
 
 -----
 
-## 📜 License
+## Troubleshooting
 
-This project is provided as-is for educational and research purposes. Please respect the licenses of any base models and datasets you use.
+**GPU not detected**
+
+Run `python check_gpu.py` for diagnostics. Common issues:
+
+- CPU-only PyTorch installed (reinstall with CUDA support)
+- Outdated NVIDIA drivers
+- CUDA version mismatch
+
+**Out of memory**
+
+- Set batch size to 1
+- Reduce max sequence length
+- Lower LoRA rank
+- Try a smaller base model
+
+**llama-quantize not found**
+
+Advanced GGUF export requires llama.cpp. Either:
+
+- Add llama.cpp to your PATH
+- Specify the full path in “llama-quantize Path” field
+
+**Training is slow**
+
+- Install Unsloth for NVIDIA GPUs
+- Verify GPU is being used (check log for “Using backend: CUDA”)
+- CPU training is inherently slow—consider cloud GPUs
 
 -----
 
-## 🙏 Acknowledgments
+## Project Structure
 
-Built with:
+```
+NTTuner/
+├── NTTuner.py              # Main application
+├── check_gpu.py            # GPU diagnostics
+├── CUDA_wuda.py            # CUDA utilities
+├── README.md
+├── QUICKSTART.md
+└── fine_tuned_output/      # Default output location
+    └── your-model/
+        ├── adapter_config.json
+        ├── adapter_model.safetensors
+        ├── training_manifest.json
+        └── gguf/
+            └── your-model-q4_k_m.gguf
+```
 
-- [Unsloth](https://github.com/unslothai/unsloth) - Fast LLM fine-tuning
-- [Transformers](https://github.com/huggingface/transformers) - Model architecture
-- [PEFT](https://github.com/huggingface/peft) - Parameter-efficient fine-tuning
-- [TRL](https://github.com/huggingface/trl) - Transformer reinforcement learning
-- [DearPyGui](https://github.com/hoffstadt/DearPyGui) - GPU-accelerated GUI
-- [llama.cpp](https://github.com/ggerganov/llama.cpp) - GGUF quantization
+-----
+
+## Links
+
+- [NTTuner](https://github.com/noosed/NTTuner) - This project
+- [NTCompanion](https://github.com/noosed/NTCompanion) - Dataset generation
 - [Ollama](https://ollama.ai) - Local LLM runtime
+- [Unsloth](https://github.com/unslothai/unsloth) - Training acceleration
+- [llama.cpp](https://github.com/ggerganov/llama.cpp) - GGUF tools
 
 -----
 
-## 📬 Links
-
-- **NTTuner**: https://github.com/noosed/NTTuner
-- **NTCompanion** (Dataset Engine): https://github.com/noosed/NTCompanion
-- **Ollama**: https://ollama.ai
-- **Unsloth**: https://github.com/unslothai/unsloth
-- **llama.cpp**: https://github.com/ggerganov/llama.cpp
-
------
-
-<p align="center">
-  Created by <a href="https://github.com/noosed">github.com/noosed</a>
-</p>
+Created by [noosed](https://github.com/noosed)
