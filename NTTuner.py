@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-# --- Add near other ML imports ---
 try:
     import chronicals
     from chronicals import ChronicalsTrainer, ChronicalsConfig, SequencePacker
