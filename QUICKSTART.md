@@ -47,12 +47,11 @@ Want multiple quantization sizes? Expand “Advanced GGUF Export”, check the b
 - GPU not found: Run `python check_gpu.py`
 - Out of memory: Reduce batch size to 1
 - Slow training: Install Unsloth, or use a cloud GPU
-- llama-quantize binary is not installed.
-
+## - llama-quantize binary is not installed.
 The fix provides clear instructions when this error occurs:
+ Quick Solution (Choose ONE):
 
 
-Quick Solution (Choose ONE):
 OPTION 1 (Easiest):
 bashpip install llama-cpp-python
 
