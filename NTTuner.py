@@ -1,5 +1,12 @@
 # -*- coding: utf-8 -*-
-
+# --- Add near other ML imports ---
+try:
+    import chronicals
+    from chronicals import ChronicalsTrainer, ChronicalsConfig, SequencePacker
+    from chronicals.optim import LoRAPlusOptimizer
+    CHRONICALS_AVAILABLE = True
+except ImportError:
+    CHRONICALS_AVAILABLE = False
 import dearpygui.dearpygui as dpg
 import subprocess
 import os
@@ -16,6 +23,9 @@ import sys
 import shutil
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# ENHANCED GPU DETECTION
+# ═══════════════════════════════════════════════════════════════════════
 
 def detect_gpu_comprehensive():
     """
@@ -118,6 +128,10 @@ GPU_COUNT = GPU_INFO["gpu_count"]
 GPU_BACKEND = GPU_INFO["backend"]
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# DEPENDENCY CHECKS
+# ═══════════════════════════════════════════════════════════════════════
+
 def get_ollama_models():
     """Get list of installed Ollama models"""
     try:
@@ -139,29 +153,36 @@ def get_ollama_models():
 def get_popular_models():
     """Get comprehensive list of models for fine-tuning"""
     models = {
-        "Ollama Models (Installed)": get_ollama_models(),
-        "Popular Ollama Models": [
-            "llama3.2:3b", "llama3.1:8b", "llama3:70b",
+        "Ollama Models (Installed)\u200b": get_ollama_models(),
+        # ── Ollama-pull names (colon format).  These are ONLY for the
+        #     "Download" button.  They will be blocked from training automatically.
+        "Ollama Pull Only (Download first)": [
+            "llama3.2:3b", "llama3.1:8b",
             "mistral:7b", "mixtral:8x7b",
             "phi3:mini", "phi4:14b",
             "gemma:7b", "gemma2:9b",
-            "qwen2.5:7b", "qwen2.5:14b",
+            "qwen2.5:0.5b", "qwen2.5:7b", "qwen2.5:14b",
         ],
+        # ── HuggingFace IDs  ─── safe to load directly ───
         "Small Models (CPU-friendly)": [
+            "Qwen/Qwen2.5-0.5B-Instruct",
+            "Qwen/Qwen2.5-1.5B-Instruct",
+            "Qwen/Qwen2-1.5B-Instruct",
             "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
             "microsoft/phi-2",
             "stabilityai/stablelm-2-1_6b",
-            "Qwen/Qwen2-1.5B-Instruct",
         ],
         "Medium Models (GPU recommended)": [
+            "meta-llama/Llama-3.2-3B-Instruct",
             "unsloth/llama-3-8b-bnb-4bit",
             "unsloth/mistral-7b-v0.3-bnb-4bit",
             "unsloth/Phi-3-mini-4k-instruct",
-            "meta-llama/Llama-3.2-3B-Instruct",
+            "Qwen/Qwen2.5-7B-Instruct",
         ],
         "Large Models (Good GPU required)": [
-            "unsloth/llama-3-70b-bnb-4bit",
             "meta-llama/Llama-3.1-8B-Instruct",
+            "Qwen/Qwen2.5-14B-Instruct",
+            "unsloth/llama-3-70b-bnb-4bit",
             "meta-llama/Llama-3.1-70B-Instruct",
         ]
     }
@@ -310,6 +331,112 @@ GGUF_PRESETS = {
 }
 
 
+# ────────────────────────────────────────────────────────────────────────
+# Chat-template registry & auto-detection
+# ────────────────────────────────────────────────────────────────────────
+
+# Each entry: (list-of-name-fragments-to-match, marker-tokens-present-in-formatted-text, wrap-function)
+# wrap_function(system_prompt, user_msg, assistant_msg) -> formatted text string
+# If the dataset text already contains the marker tokens we skip wrapping.
+
+def _wrap_chatml(system, user, assistant):
+    """Qwen / Yi / Internlm ChatML style"""
+    parts = []
+    if system:
+        parts.append(f"<|im_start|>system\n{system}<|im_end|>")
+    parts.append(f"<|im_start|>user\n{user}<|im_end|>")
+    parts.append(f"<|im_start|>assistant\n{assistant}<|im_end|>")
+    return "\n".join(parts)
+
+def _wrap_llama3(system, user, assistant):
+    """Meta Llama-3 / Llama-3.1 / Llama-3.2 style"""
+    parts = []
+    parts.append("<|begin_of_text|>")
+    if system:
+        parts.append(f"<|start_header_id|>system<|end_header_id|>\n\n{system}<|eot_id|>")
+    parts.append(f"<|start_header_id|>user<|end_header_id|>\n\n{user}<|eot_id|>")
+    parts.append(f"<|start_header_id|>assistant<|end_header_id|>\n\n{assistant}<|eot_id|>")
+    return "".join(parts)
+
+def _wrap_mistral(system, user, assistant):
+    """Mistral / Mixtral style"""
+    # Mistral doesn't have an official system token; prepend to user turn
+    user_text = f"{system}\n\n{user}" if system else user
+    return f"[INST] {user_text} [/INST]{assistant}</s>"
+
+def _wrap_phi(system, user, assistant):
+    """Microsoft Phi-3 / Phi-4 style"""
+    parts = []
+    if system:
+        parts.append(f"<|system|>\n{system}<|end|>")
+    parts.append(f"<|user|>\n{user}<|end|>")
+    parts.append(f"<|assistant|>\n{assistant}<|end|>")
+    return "\n".join(parts)
+
+def _wrap_gemma(system, user, assistant):
+    """Google Gemma style"""
+    user_text = f"{system}\n\n{user}" if system else user
+    return f"<start_of_turn>user\n{user_text}<end_of_turn>\n<start_of_turn>model\n{assistant}<end_of_turn>"
+
+def _wrap_tinyllama(system, user, assistant):
+    """TinyLlama / vicuna chat style"""
+    parts = []
+    if system:
+        parts.append(f"<|system|>\n{system}</s>")
+    parts.append(f"<|user|>\n{user}</s>")
+    parts.append(f"<|assistant|>\n{assistant}</s>")
+    return "\n".join(parts)
+
+def _wrap_stablelm(system, user, assistant):
+    """StableLM-2 style (same as TinyLlama chat)"""
+    return _wrap_tinyllama(system, user, assistant)
+
+# (match_fragments, display_name, marker_tokens, wrap_fn)
+MODEL_TEMPLATES: List[Tuple[List[str], str, List[str], Any]] = [
+    # Qwen family
+    (["qwen"],          "ChatML (Qwen)",      ["<|im_start|>", "<|im_end|>"],            _wrap_chatml),
+    # Yi / Internlm also use ChatML
+    (["yi-", "internlm"], "ChatML",           ["<|im_start|>", "<|im_end|>"],            _wrap_chatml),
+    # Llama 3.x
+    (["llama-3", "llama3", "llama-3.1", "llama-3.2"],
+                        "Llama-3",            ["<|start_header_id|>", "<|eot_id|>"],     _wrap_llama3),
+    # Mistral / Mixtral
+    (["mistral", "mixtral"],
+                        "Mistral",            ["[INST]", "[/INST]"],                     _wrap_mistral),
+    # Phi
+    (["phi-3", "phi3", "phi-4", "phi4"],
+                        "Phi",                ["<|system|>", "<|user|>", "<|assistant|>"],_wrap_phi),
+    # Gemma
+    (["gemma"],         "Gemma",              ["<start_of_turn>", "<end_of_turn>"],      _wrap_gemma),
+    # TinyLlama
+    (["tinyllama"],     "TinyLlama",          ["<|system|>", "<|user|>", "<|assistant|>"],_wrap_tinyllama),
+    # StableLM
+    (["stablelm"],      "StableLM",           ["<|system|>", "<|user|>", "<|assistant|>"],_wrap_stablelm),
+]
+
+
+def detect_template_for_model(model_name: str) -> Optional[Tuple[str, List[str], Any]]:
+    """
+    Given a HuggingFace model name, return (display_name, marker_tokens, wrap_fn)
+    or None if no template is recognised.
+    """
+    lower = model_name.lower().replace("/", " ").replace("-", " ").replace("_", " ")
+    for fragments, display, markers, wrap_fn in MODEL_TEMPLATES:
+        if any(frag.lower() in lower for frag in fragments):
+            return display, markers, wrap_fn
+    return None
+
+
+def dataset_has_markers(text: str, markers: List[str]) -> bool:
+    """Check whether a text string already contains the expected template marker tokens."""
+    return all(m in text for m in markers)
+
+
+# ────────────────────────────────────────────────────────────────────────
+# End: Chat-template registry
+# ────────────────────────────────────────────────────────────────────────
+
+
 def find_llama_quantize() -> Optional[str]:
     """Find llama-quantize or llama.cpp quantize binary"""
     # Common names for the quantize binary
@@ -407,6 +534,7 @@ class TrainingConfig:
     base_model: str = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
     dataset_path: str = ""
     lora_rank: int = 32
+    use_chronicals: bool = False  # New 2026 "Insane Fast Mode" flag
     lora_alpha: int = 64
     lora_dropout: float = 0.0
     epochs: int = 1
@@ -431,6 +559,11 @@ class TrainingConfig:
         """Validate configuration"""
         if not self.base_model.strip():
             return False, "Base model cannot be empty"
+        # Block Ollama colon-style names (e.g. "qwen2.5:0.5b") — they crash HF loader
+        if ":" in self.base_model and "/" not in self.base_model:
+            return False, (f"'{self.base_model}' is an Ollama pull name and cannot be loaded directly. "
+                           f"Use the Download button first, then select the HuggingFace equivalent "
+                           f"(e.g. Qwen/Qwen2.5-0.5B-Instruct).")
         if not self.dataset_path.strip():
             return False, "Dataset path cannot be empty"
         if not os.path.exists(self.dataset_path):
@@ -1030,7 +1163,7 @@ class TrainingManager:
         # ────────────────────────────────────────────────────────────────
 
     def prepare_dataset(self, config: TrainingConfig) -> Tuple[Optional[Any], str]:
-        """Prepare NTCompanion dataset for training"""
+        """Prepare dataset for training with chat-template auto-detection and auto-wrapping."""
         self.log("Loading dataset...\n")
 
         data, error = DatasetHandler.load_dataset(config.dataset_path)
@@ -1051,8 +1184,67 @@ class TrainingManager:
         if stats['format_issues']:
             self.log(f"  Warning: {len(stats['format_issues'])} entries with issues\n")
 
+        # ── Chat-template detection & auto-wrap ──────────────────────────
+        template_info = detect_template_for_model(config.base_model)
+
+        if template_info:
+            tmpl_name, markers, wrap_fn = template_info
+            self.log(f"\n[TEMPLATE] Detected: {tmpl_name}\n")
+            self.log(f"  Expected markers: {markers}\n")
+
+            # Sample the first entry to check whether markers are already present
+            sample_text = (data[0].get('text', '') or
+                           data[0].get('content', '') or
+                           data[0].get('prompt', ''))
+
+            if dataset_has_markers(sample_text, markers):
+                self.log(f"  ✓ Dataset already contains {tmpl_name} markers — using as-is\n")
+            else:
+                # Check whether the entries have separate system/user/assistant fields
+                # so we can auto-wrap them
+                has_structured = any(
+                    k in data[0] for k in ('user', 'question', 'input', 'prompt')
+                ) and any(
+                    k in data[0] for k in ('assistant', 'answer', 'output', 'response', 'completion')
+                )
+
+                if has_structured:
+                    self.log(f"  ⟳ Auto-wrapping {len(data)} entries with {tmpl_name} template...\n")
+                    wrapped = []
+                    for entry in data:
+                        sys_msg  = (entry.get('system', '') or
+                                    entry.get('system_prompt', '') or
+                                    'You are a helpful assistant.')
+                        user_msg = (entry.get('user', '') or
+                                    entry.get('question', '') or
+                                    entry.get('input', '') or
+                                    entry.get('prompt', ''))
+                        asst_msg = (entry.get('assistant', '') or
+                                    entry.get('answer', '') or
+                                    entry.get('output', '') or
+                                    entry.get('response', '') or
+                                    entry.get('completion', ''))
+                        if user_msg and asst_msg:
+                            wrapped.append({'text': wrap_fn(sys_msg, user_msg, asst_msg)})
+                        else:
+                            # Fallback: keep raw text
+                            raw = entry.get('text', '') or entry.get('content', '')
+                            if raw:
+                                wrapped.append({'text': raw})
+                    data = wrapped
+                    self.log(f"  ✓ Auto-wrap complete — {len(data)} entries ready\n")
+                else:
+                    # Single 'text' field but no markers — loud warning
+                    self.log(f"  ⚠ WARNING: Dataset 'text' field does NOT contain {tmpl_name} markers\n")
+                    self.log(f"    and no structured fields (user/assistant) found for auto-wrapping.\n")
+                    self.log(f"    Expected markers: {markers}\n")
+                    self.log(f"    Training will proceed but quality may be poor.\n")
+                    self.log(f"    → Format your JSONL with the correct chat template before training.\n\n")
+        else:
+            self.log(f"\n[TEMPLATE] No known template for '{config.base_model}' — using dataset as-is\n")
+        # ── end template logic ────────────────────────────────────────────
+
         try:
-            # NTCompanion format: Each entry already has formatted "text" field
             processed_data = []
             for entry in data:
                 text = entry.get('text', '') or entry.get('content', '') or entry.get('prompt', '')
@@ -1094,6 +1286,8 @@ class TrainingManager:
                 self.log(f"Using standard Transformers ({backend_name})...\n")
 
                 self.tokenizer = AutoTokenizer.from_pretrained(config.base_model)
+                if self.tokenizer.pad_token is None:
+                    self.tokenizer.pad_token = self.tokenizer.eos_token
                 device_map = get_device_map()
                 torch_dtype = get_torch_dtype()
 
@@ -1137,6 +1331,12 @@ class TrainingManager:
         self.is_training = True
         self.should_stop = False
         self.start_time = time.time()
+        
+        # Initialize progress bar
+        if dpg.does_item_exist("training_progress_bar"):
+            dpg.set_value("training_progress_bar", 0.0)
+        if dpg.does_item_exist("progress_text"):
+            dpg.set_value("progress_text", "Initializing training...")
 
         try:
             dataset, error = self.prepare_dataset(config)
@@ -1179,9 +1379,24 @@ class TrainingManager:
                             self.manager.last_loss = logs['loss']
                         elapsed = time.time() - self.manager.start_time
                         if state.global_step > 0:
+                            # Calculate progress
+                            progress = state.global_step / self.manager.total_steps
                             time_per_step = elapsed / state.global_step
                             remaining = self.manager.total_steps - state.global_step
                             eta = remaining * time_per_step
+                            
+                            # Update progress bar and text in GUI
+                            if dpg.does_item_exist("training_progress_bar"):
+                                dpg.set_value("training_progress_bar", progress)
+                            if dpg.does_item_exist("progress_text"):
+                                progress_info = (
+                                    f"Step {state.global_step}/{self.manager.total_steps} "
+                                    f"({progress*100:.1f}%) | Loss: {logs.get('loss', 0):.4f} | "
+                                    f"ETA: {format_time(eta)}"
+                                )
+                                dpg.set_value("progress_text", progress_info)
+                            
+                            # Also log to text window
                             self.manager.log(
                                 f"Step {state.global_step}/{self.manager.total_steps} | "
                                 f"Loss: {logs.get('loss', 0):.4f} | ETA: {format_time(eta)}\n"
@@ -1190,13 +1405,20 @@ class TrainingManager:
                 def on_epoch_end(self, args, state, control, **kwargs):
                     self.manager.log(f"Epoch {int(state.epoch)} complete\n")
 
+            self.model.config.pad_token_id = self.tokenizer.pad_token_id
+            self.model.resize_token_embeddings(len(self.tokenizer))
+
+            # Prepare dataset in standard format for SFTTrainer
+            # Convert to simple text list format that works across TRL versions
+            formatted_dataset = dataset.map(
+                lambda x: {"text": x["text"]},
+                remove_columns=dataset.column_names
+            )
+
             self.trainer = SFTTrainer(
                 model=self.model,
-                tokenizer=self.tokenizer,
+                train_dataset=formatted_dataset,
                 args=training_args,
-                train_dataset=dataset,
-                dataset_text_field="text",
-                max_seq_length=config.max_seq_length,
                 callbacks=[ProgressCallback(self)],
             )
 
@@ -1207,6 +1429,12 @@ class TrainingManager:
             self.trainer.train()
 
             if not self.should_stop:
+                # Mark progress as complete
+                if dpg.does_item_exist("training_progress_bar"):
+                    dpg.set_value("training_progress_bar", 1.0)
+                if dpg.does_item_exist("progress_text"):
+                    dpg.set_value("progress_text", "Training Complete! ✓")
+                    
                 self.log("=" * 60 + "\n")
                 self.log("Training complete!\n")
                 self.log("=" * 60 + "\n")
@@ -1215,6 +1443,12 @@ class TrainingManager:
             return True
 
         except Exception as e:
+            # Reset progress bar on error
+            if dpg.does_item_exist("training_progress_bar"):
+                dpg.set_value("training_progress_bar", 0.0)
+            if dpg.does_item_exist("progress_text"):
+                dpg.set_value("progress_text", "Training Failed ✗")
+                
             self.log(f"ERROR: Training failed\n{str(e)}\n{traceback.format_exc()}\n")
             return False
 
@@ -1480,6 +1714,51 @@ class NTTunerGUI:
             self.append_log("\n")
         return True
 
+    def train_with_chronicals(self, config, progress_callback):
+        """Dedicated Chronicals path to keep main logic clean."""
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+        import torch
+
+        self.log("Initializing Chronicals 'Insane Fast Mode' (v0.1.0)...")
+
+        # Load Model
+        model = AutoModelForCausalLM.from_pretrained(
+            config.base_model,
+            torch_dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16,
+            device_map="auto",
+            attn_implementation="flash_attention_2"
+        )
+        tokenizer = AutoTokenizer.from_pretrained(config.base_model)
+        tokenizer.pad_token = tokenizer.eos_token
+
+        # Chronicals specific setup
+        c_config = ChronicalsConfig(use_fused_kernels=True, use_packing="BFD")
+        model = chronicals.prepare_model_for_lora(
+            model, r=config.lora_rank, alpha=config.lora_alpha
+        )
+
+        # Packing logic using your existing handler
+        raw_data = self.dataset_handler.load(config.dataset_path)
+        packer = SequencePacker(tokenizer, max_seq_length=config.max_seq_length)
+        packed_ds = packer.pack(raw_data)
+
+        optimizer = LoRAPlusOptimizer(model.parameters(), lr=config.learning_rate)
+
+        trainer = ChronicalsTrainer(
+            model=model,
+            config=c_config,
+            train_dataset=packed_ds,
+            optimizer=optimizer,
+            args=trl.SFTConfig(
+                output_dir=config.output_dir,
+                per_device_train_batch_size=config.batch_size,
+                num_train_epochs=config.epochs,
+                bf16=torch.cuda.is_bf16_supported(),
+            )
+        )
+        trainer.train()
+        model.save_pretrained(config.output_dir)
+
     def start_training_callback(self):
         """Start training"""
         if not self.validate_and_warn():
@@ -1501,6 +1780,11 @@ class NTTunerGUI:
         """Stop training"""
         if self.trainer:
             self.trainer.stop()
+            # Reset progress indicators
+            if dpg.does_item_exist("training_progress_bar"):
+                dpg.set_value("training_progress_bar", 0.0)
+            if dpg.does_item_exist("progress_text"):
+                dpg.set_value("progress_text", "Training Stopped by User")
 
     def set_training_state(self, is_training: bool):
         """Lock/unlock UI"""
@@ -1607,8 +1891,36 @@ class NTTunerGUI:
             dpg.set_value("output_dir", dirpath)
 
     def model_selected_callback(self, sender, app_data):
-        if not app_data.startswith("---"):
-            dpg.set_value("base_model", app_data)
+        """Called when user picks a model from the combo OR edits the custom text field.
+        Detects the chat template, updates the indicator label, and blocks
+        Ollama colon-style names from being used for training."""
+        if app_data.startswith("---"):
+            return
+        dpg.set_value("base_model", app_data)
+        self._update_template_indicator(app_data)
+
+    def _update_template_indicator(self, model_name: str):
+        """Detect template for *model_name* and refresh the GUI indicator text."""
+        if not dpg.does_item_exist("template_indicator"):
+            return
+
+        # Ollama colon names cannot be loaded by transformers
+        if ":" in model_name and "/" not in model_name:
+            dpg.set_value("template_indicator",
+                          f"⚠ '{model_name}' is an Ollama name — use Download first, then pick the HuggingFace equivalent")
+            dpg.configure_item("template_indicator", color=[255, 180, 80])
+            return
+
+        info = detect_template_for_model(model_name)
+        if info:
+            display, markers, _ = info
+            dpg.set_value("template_indicator",
+                          f"✓ Detected template: {display}   (markers: {', '.join(markers)})")
+            dpg.configure_item("template_indicator", color=[100, 220, 100])
+        else:
+            dpg.set_value("template_indicator",
+                          "? No known template — dataset must already be formatted correctly")
+            dpg.configure_item("template_indicator", color=[255, 200, 80])
 
     def refresh_models(self):
         self.append_log("Refreshing models...\n")
@@ -1856,7 +2168,13 @@ class NTTunerGUI:
                     dpg.add_button(label="Download", callback=self.download_model, width=80)
 
                 dpg.add_input_text(label="Custom Model", default_value=self.config.base_model, tag="base_model",
-                                   width=500)
+                                   width=500,
+                                   callback=lambda s, a: self._update_template_indicator(a),
+                                   on_enter=True)
+
+                # Live template indicator — updated whenever model selection changes
+                dpg.add_text("? Enter or select a model to detect its chat template",
+                             tag="template_indicator", color=[255, 200, 80])
 
                 with dpg.group(horizontal=True):
                     dpg.add_input_text(label="Dataset Path", default_value=self.config.dataset_path,
@@ -1988,9 +2306,24 @@ class NTTunerGUI:
                 dpg.add_button(label="Clear Log", callback=self.clear_log_callback, width=100, height=40)
                 dpg.add_button(label="Save Config", callback=self.save_config_callback, width=100, height=40)
                 dpg.add_button(label="Load Config", callback=self.load_config_callback, width=100, height=40)
+            # Look for a line like this in your code:
+            with dpg.group(horizontal=True):
+                # ... existing buttons or inputs ...
 
+                # PASTE HERE (Ensure it is indented at the same level as the other inputs)
+                dpg.add_checkbox(
+                    label="Use Chronicals (3.5x Speedup)",
+                    tag="use_chronicals_chk",
+                    default_value=False,
+                    callback=lambda s, a: setattr(self.config, 'use_chronicals', a)
+                )
             dpg.add_separator()
 
+            dpg.add_text("Training Progress:", color=[150, 150, 160])
+            dpg.add_progress_bar(tag="training_progress_bar", default_value=0.0, width=-1, height=25)
+            dpg.add_text("", tag="progress_text", color=[100, 200, 100])
+            
+            dpg.add_spacer(height=5)
             dpg.add_text("Training Log:", color=[150, 150, 160])
             with dpg.child_window(tag="log_window", height=280, border=True):
                 dpg.add_text("", tag="log", wrap=0)
