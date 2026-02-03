@@ -5,9 +5,7 @@
 [![License](https://img.shields.io/badge/license-Educational-green.svg)](LICENSE)
 [![Stars](https://img.shields.io/github/stars/noosed/NTTuner)](https://github.com/noosed/NTTuner/stargazers)
 
-<p align="center">
-  <img src="https://private-user-images.githubusercontent.com/86632409/544024580-da945fa6-0bdb-4d7c-b209-4e73ca07824e.png" alt="NTTuner Interface" width="800">
-</p>
+
 
 **Desktop GUI for fine-tuning Large Language Models with automatic Ollama deployment**
 
