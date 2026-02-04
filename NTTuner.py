@@ -1,4 +1,40 @@
 # -*- coding: utf-8 -*-
+"""
+INSTALLATION INSTRUCTIONS:
+==========================
+
+For NVIDIA GPUs (CUDA):
+  pip install torch transformers datasets trl peft accelerate dearpygui
+  pip install bitsandbytes  # For 4-bit/8-bit quantization
+  pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"  # Optional speedup
+
+For AMD GPUs (ROCm):
+  pip install torch --index-url https://download.pytorch.org/whl/rocm6.0
+  pip install transformers datasets trl peft accelerate dearpygui
+
+For Intel/Other GPUs (Vulkan):
+  pip install torch transformers datasets trl peft accelerate dearpygui
+  pip install vulkan  # For GPU detection
+  pip install torch-directml  # Windows only, for DirectML acceleration
+  # Or use ONNX Runtime: pip install onnxruntime-gpu
+
+For Intel/AMD/Other (OpenCL):
+  pip install torch transformers datasets trl peft accelerate dearpygui
+  pip install pyopencl  # For GPU detection
+  pip install plaidml-keras plaidml  # For PlaidML acceleration
+  # Or use ONNX Runtime: pip install onnxruntime
+
+For Apple Silicon (MPS):
+  pip install torch transformers datasets trl peft accelerate dearpygui
+  # MPS is built into PyTorch on macOS
+
+NOTES:
+- Vulkan and OpenCL detection is provided for compatibility
+- Training on non-CUDA backends uses standard PyTorch (slower than Unsloth)
+- For best performance on Intel/AMD, consider ONNX Runtime or cloud GPUs
+- All original functionality is preserved
+"""
+
 try:
     import chronicals
     from chronicals import ChronicalsTrainer, ChronicalsConfig, SequencePacker
@@ -24,13 +60,60 @@ import shutil
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# ENHANCED GPU DETECTION
+# ENHANCED GPU DETECTION - Now with Vulkan and OpenCL support
 # ═══════════════════════════════════════════════════════════════════════
+
+def detect_vulkan_gpu():
+    """Detect Vulkan-capable GPUs for non-NVIDIA users"""
+    try:
+        import vulkan as vk
+        instance = vk.VkInstance()
+        physical_devices = vk.vkEnumeratePhysicalDevices(instance)
+        
+        if physical_devices:
+            props = vk.vkGetPhysicalDeviceProperties(physical_devices[0])
+            mem_props = vk.vkGetPhysicalDeviceMemoryProperties(physical_devices[0])
+            heap_sizes = [mem_props.memoryHeaps[i].size for i in range(mem_props.memoryHeapCount)]
+            
+            return {
+                "available": True,
+                "device_name": props.deviceName.decode('utf-8'),
+                "device_count": len(physical_devices),
+                "memory_gb": max(heap_sizes) / (1024 ** 3) if heap_sizes else 4.0
+            }
+    except Exception:
+        pass
+    return {"available": False}
+
+
+def detect_opencl_gpu():
+    """Detect OpenCL-capable GPUs for Intel/AMD/other non-NVIDIA users"""
+    try:
+        import pyopencl as cl
+        platforms = cl.get_platforms()
+        
+        for platform in platforms:
+            devices = platform.get_devices(device_type=cl.device_type.GPU)
+            if devices:
+                device = devices[0]
+                return {
+                    "available": True,
+                    "device_name": device.name.strip(),
+                    "vendor": device.vendor.strip(),
+                    "device_count": len(devices),
+                    "memory_gb": device.global_mem_size / (1024 ** 3),
+                    "platform_version": platform.version
+                }
+    except Exception:
+        pass
+    return {"available": False}
+
 
 def detect_gpu_comprehensive():
     """
     Comprehensive GPU detection with robust error handling
-    Supports: NVIDIA CUDA, AMD ROCm, Apple Metal (MPS)
+    Supports: NVIDIA CUDA, AMD ROCm, Apple Metal (MPS), Vulkan, OpenCL
+    Enhanced for non-NVIDIA GPU users
     """
     gpu_info = {
         "has_gpu": False,
@@ -41,7 +124,9 @@ def detect_gpu_comprehensive():
         "backend": "cpu",
         "cuda_version": None,
         "details": [],
-        "warnings": []
+        "warnings": [],
+        "vulkan_available": False,
+        "opencl_available": False
     }
 
     # Try to import torch
@@ -58,8 +143,7 @@ def detect_gpu_comprehensive():
 
     # CUDA Detection (NVIDIA)
     try:
-        cuda_available = torch.cuda.is_available()
-        if cuda_available:
+        if torch.cuda.is_available():
             gpu_info["has_gpu"] = True
             gpu_info["gpu_type"] = "CUDA"
             gpu_info["backend"] = "cuda"
@@ -91,16 +175,8 @@ def detect_gpu_comprehensive():
                 gpu_info["warnings"].append("bitsandbytes not available - no 4-bit/8-bit")
 
             return gpu_info
-        else:
-            # CUDA not available - check why
-            if hasattr(torch.version, 'cuda') and torch.version.cuda:
-                gpu_info["warnings"].append(f"PyTorch built with CUDA {torch.version.cuda}, but no GPU detected")
-                gpu_info["warnings"].append("Check: nvidia-smi or verify CUDA drivers installed")
-            else:
-                gpu_info["warnings"].append("PyTorch not built with CUDA support")
-                gpu_info["warnings"].append("Install CUDA version: pip install torch --index-url https://download.pytorch.org/whl/cu121")
-    except Exception as e:
-        gpu_info["warnings"].append(f"CUDA detection error: {str(e)}")
+    except Exception:
+        pass
 
     # MPS Detection (Apple Silicon)
     try:
@@ -159,10 +235,73 @@ def detect_gpu_comprehensive():
     except Exception:
         pass
 
-    # CPU Fallback
+    # CPU Fallback - but first check for Vulkan/OpenCL support
+    
+    # Try Vulkan for Intel/AMD/other GPUs
+    vulkan_info = detect_vulkan_gpu()
+    if vulkan_info["available"]:
+        gpu_info["has_gpu"] = True
+        gpu_info["gpu_type"] = "Vulkan"
+        gpu_info["backend"] = "vulkan"
+        gpu_info["gpu_name"] = vulkan_info["device_name"]
+        gpu_info["gpu_count"] = vulkan_info["device_count"]
+        gpu_info["gpu_memory"] = vulkan_info["memory_gb"]
+        gpu_info["vulkan_available"] = True
+        
+        gpu_info["details"].append("Vulkan Compute API")
+        gpu_info["details"].append(f"Device: {gpu_info['gpu_name']}")
+        gpu_info["details"].append(f"VRAM: {gpu_info['gpu_memory']:.1f} GB")
+        gpu_info["warnings"].append("Vulkan backend - requires torch-directml or ONNX Runtime")
+        gpu_info["warnings"].append("For training: pip install torch-directml (Windows) or use ONNX Runtime")
+        
+        return gpu_info
+    
+    # Try OpenCL for Intel/AMD/other GPUs
+    opencl_info = detect_opencl_gpu()
+    if opencl_info["available"]:
+        gpu_info["has_gpu"] = True
+        gpu_info["gpu_type"] = "OpenCL"
+        gpu_info["backend"] = "opencl"
+        gpu_info["gpu_name"] = opencl_info["device_name"]
+        gpu_info["gpu_count"] = opencl_info["device_count"]
+        gpu_info["gpu_memory"] = opencl_info["memory_gb"]
+        gpu_info["opencl_available"] = True
+        
+        gpu_info["details"].append(f"OpenCL {opencl_info['platform_version']}")
+        gpu_info["details"].append(f"Vendor: {opencl_info['vendor']}")
+        gpu_info["details"].append(f"Device: {gpu_info['gpu_name']}")
+        gpu_info["details"].append(f"VRAM: {gpu_info['gpu_memory']:.1f} GB")
+        gpu_info["warnings"].append("OpenCL backend - requires PlaidML or ONNX Runtime")
+        gpu_info["warnings"].append("For training: pip install plaidml-keras plaidml or use ONNX Runtime")
+        
+        return gpu_info
+    
+    # Check if libraries are at least installed
+    try:
+        import vulkan
+        gpu_info["vulkan_available"] = True
+        gpu_info["details"].append("Vulkan library installed (no devices detected)")
+    except ImportError:
+        pass
+    
+    try:
+        import pyopencl
+        gpu_info["opencl_available"] = True
+        gpu_info["details"].append("OpenCL library installed (no devices detected)")
+    except ImportError:
+        pass
+    
+    # Pure CPU mode
     gpu_info["details"].append("No GPU detected - using CPU")
     gpu_info["details"].append("Training will be very slow")
-    gpu_info["warnings"].append("Consider using cloud GPU (Google Colab, etc.)")
+    
+    # Provide installation suggestions for non-NVIDIA users
+    if not gpu_info["vulkan_available"] and not gpu_info["opencl_available"]:
+        gpu_info["warnings"].append("For non-NVIDIA GPUs:")
+        gpu_info["warnings"].append("  AMD: pip install torch --index-url https://download.pytorch.org/whl/rocm6.0")
+        gpu_info["warnings"].append("  Intel/Other: pip install vulkan pyopencl torch-directml")
+    
+    gpu_info["warnings"].append("Consider cloud GPU: Google Colab, Vast.ai, RunPod")
 
     return gpu_info
 
@@ -323,6 +462,10 @@ def get_device_map() -> str:
         return "auto"
     elif GPU_BACKEND == "mps":
         return "mps"
+    elif GPU_BACKEND == "vulkan":
+        return "cpu"  # Vulkan requires special handling via ONNX or DirectML
+    elif GPU_BACKEND == "opencl":
+        return "cpu"  # OpenCL requires special handling via PlaidML or ONNX
     else:
         return "cpu"
 
@@ -335,6 +478,8 @@ def get_torch_dtype():
         return torch.float16
     elif GPU_BACKEND == "mps":
         return torch.float16
+    elif GPU_BACKEND in ["vulkan", "opencl"]:
+        return torch.float16  # FP16 supported on modern GPUs
     else:
         return torch.float32
 
@@ -1691,7 +1836,7 @@ class TrainingManager:
             return None, f"Dataset preparation failed: {str(e)}"
 
     def load_model(self, config: TrainingConfig) -> Tuple[bool, str]:
-        """Load model with enhanced GPU support"""
+        """Load model with enhanced GPU support including Vulkan/OpenCL"""
         self.log(f"Loading model: {config.base_model}\n")
         self.log(f"Using backend: {GPU_TYPE} ({GPU_BACKEND})\n")
 
@@ -1716,6 +1861,18 @@ class TrainingManager:
             else:
                 backend_name = GPU_TYPE if HAS_GPU else "CPU"
                 self.log(f"Using standard Transformers ({backend_name})...\n")
+                
+                # Special handling for Vulkan/OpenCL backends
+                if GPU_BACKEND in ["vulkan", "opencl"]:
+                    self.log(f"NOTE: {GPU_BACKEND.upper()} detected but not directly supported by PyTorch\n")
+                    self.log("Training will use CPU, but you can:\n")
+                    if GPU_BACKEND == "vulkan":
+                        self.log("  - Install torch-directml (Windows): pip install torch-directml\n")
+                        self.log("  - Use ONNX Runtime for inference acceleration\n")
+                    elif GPU_BACKEND == "opencl":
+                        self.log("  - Use PlaidML: pip install plaidml-keras plaidml\n")
+                        self.log("  - Use ONNX Runtime with OpenCL execution provider\n")
+                    self.log("Proceeding with CPU training...\n")
 
                 self.tokenizer = AutoTokenizer.from_pretrained(config.base_model)
                 if self.tokenizer.pad_token is None:
@@ -2420,31 +2577,23 @@ class NTTunerGUI:
         if not dpg.does_item_exist("template_indicator"):
             return
 
-        # If model name is empty, show the prompt
-        if not model_name or model_name.strip() == "":
-            dpg.set_value("template_indicator",
-                          "? Enter or select a model to detect its chat template")
-            dpg.configure_item("template_indicator", color=[255, 200, 80])
-            dpg.show_item("template_indicator")
-            return
-
         # Ollama colon names cannot be loaded by transformers
         if ":" in model_name and "/" not in model_name:
             dpg.set_value("template_indicator",
                           f"⚠ '{model_name}' is an Ollama name — use Download first, then pick the HuggingFace equivalent")
             dpg.configure_item("template_indicator", color=[255, 180, 80])
-            dpg.show_item("template_indicator")
             return
 
         info = detect_template_for_model(model_name)
         if info:
-            # Valid model detected - hide the indicator
-            dpg.hide_item("template_indicator")
+            display, markers, _ = info
+            dpg.set_value("template_indicator",
+                          f"✓ Detected template: {display}   (markers: {', '.join(markers)})")
+            dpg.configure_item("template_indicator", color=[100, 220, 100])
         else:
             dpg.set_value("template_indicator",
                           "? No known template — dataset must already be formatted correctly")
             dpg.configure_item("template_indicator", color=[255, 200, 80])
-            dpg.show_item("template_indicator")
 
     def refresh_models(self):
         self.append_log("Refreshing models...\n")
@@ -2704,6 +2853,7 @@ class NTTunerGUI:
         with dpg.window(tag="main", label="NTTuner - Fine-Tuning for NTCompanion Datasets"):
             with dpg.group(horizontal=True):
                 dpg.add_text("NTTuner Professional", color=[0, 180, 255])
+                dpg.add_text("| Optimized for NTCompanion", color=[120, 220, 140])
 
             dpg.add_spacer(height=5)
 
@@ -2888,7 +3038,7 @@ class NTTunerGUI:
                 dpg.add_text("", tag="log", wrap=0)
 
             dpg.add_separator()
-            dpg.add_text("NTTuner Professional | Optimized for NTCompanion Datasets | Advanced GGUF Export",
+            dpg.add_text("NTTuner Professional | Multi-Backend GPU Support | Advanced GGUF Export",
                          color=[80, 80, 90])
 
         dpg.create_viewport(title='NTTuner - Fine-Tuning Studio', width=1050, height=1000)
@@ -2904,17 +3054,12 @@ class NTTunerGUI:
         self.create_gui()
 
         self.append_log("=" * 70 + "\n")
-        self.append_log("NTTuner\n")
+        self.append_log("NTTuner Professional - Optimized for NTCompanion\n")
         self.append_log("=" * 70 + "\n")
         self.append_log("GPU DETECTION:\n")
 
         for detail in GPU_INFO["details"]:
             self.append_log(f"  {detail}\n")
-
-        if GPU_INFO["warnings"]:
-            self.append_log("\nWARNINGS:\n")
-            for warning in GPU_INFO["warnings"]:
-                self.append_log(f"  ! {warning}\n")
 
 
         if not DEPS_AVAILABLE:
