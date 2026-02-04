@@ -401,9 +401,6 @@ Built with:
 * **Ollama**: <https://ollama.ai>
 * **Unsloth**: <https://github.com/unslothai/unsloth>
 
----
-
-Enhanced for multi-backend GPU support | Created by [github.com/noosed](https://github.com/noosed)
 
 ---
 
