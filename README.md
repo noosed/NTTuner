@@ -1,629 +1,272 @@
 <img width="1000" height="720" alt="image" src="https://github.com/user-attachments/assets/da945fa6-0bdb-4d7c-b209-4e73ca07824e" />
-# NTTuner - LLM Fine-Tuning Made Simple
 
 [![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-Educational-green.svg)](LICENSE)
 [![Stars](https://img.shields.io/github/stars/noosed/NTTuner)](https://github.com/noosed/NTTuner/stargazers)
 
 
-**Desktop GUI for fine-tuning Large Language Models with automatic Ollama deployment**
+# NTech LLM Tuner
 
-NTTuner is a user-friendly desktop application that makes fine-tuning LLMs accessible to everyone. Whether you're a researcher, developer, or AI enthusiast, NTTuner handles the complexity of LoRA training, GGUF conversion, and Ollama integration through an intuitive graphical interface.
+A desktop GUI application for fine-tuning large language models and deploying them directly to Ollama. Built for ease of use, with support for both GPU and CPU training.
 
----
+## Overview
 
-## 🌟 Key Features
+NTech LLM Tuner simplifies the process of fine-tuning language models by providing an intuitive interface that handles the complexity of LoRA training, GGUF conversion, and Ollama integration. Whether you're customizing a model for a specific task or experimenting with different training configurations, this tool streamlines the entire workflow.
 
-### 🚀 **One-Click Fine-Tuning**
-- **GPU Acceleration**: Automatic CUDA detection with 2-5x speedup via Unsloth
-- **CPU Fallback**: Full CPU support (slower but functional on any machine)
-- **LoRA Training**: Parameter-efficient fine-tuning with configurable rank/alpha
-- **Background Processing**: Non-blocking UI that stays responsive during training
+## Features
 
-### 🎯 **Seamless Ollama Integration**
-- **Auto-Import**: Trained models automatically deploy to your Ollama instance
-- **Model Discovery**: Detects and lists all installed Ollama models
-- **Built-in Downloader**: Download popular models directly from the interface
-- **Custom Models**: Support for any HuggingFace-compatible model
+### Training Capabilities
 
-### 💾 **Smart Dataset Management**
-- **Drag & Drop**: Drop JSONL files directly onto the interface
-- **Format Validation**: Automatic checking for proper formatting
-- **Example Templates**: Built-in examples for common chat formats
-- **Batch Processing**: Handle datasets of any size
+* **LoRA Fine-tuning**: Efficient parameter-efficient training with configurable rank and alpha
+* **GPU Acceleration**: Automatic detection and utilization of CUDA GPUs
+* **CPU Fallback**: Full support for CPU-only training (though significantly slower)
+* **Unsloth Integration**: Optional 2-5x speedup with Unsloth library on supported GPUs
+* **Background Training**: Non-blocking UI that remains responsive during training
 
-### ⚙️ **Advanced Configuration**
-- **Preset Profiles**: Quick-start templates for common use cases
-- **Save/Load Configs**: Reuse training configurations as JSON
-- **Hyperparameter Control**: Fine-tune learning rate, batch size, epochs, etc.
-- **Quantization Options**: Choose from q4_k_m to f16 based on your needs
+### Model Management
 
-### 📊 **Real-Time Monitoring**
-- **Live Training Logs**: Watch progress as it happens
-- **GPU Utilization**: Monitor VRAM and compute usage
-- **Loss Tracking**: See training and validation metrics
-- **ETA Estimates**: Know how long training will take
+* **Ollama Integration**: Automatically imports models into your local Ollama instance
+* **Model Discovery**: Detects and lists all installed Ollama models
+* **Download Support**: Built-in downloader for popular Ollama models
+* **HuggingFace Support**: Direct integration with HuggingFace model hub
 
----
+### User Interface
 
-## 📥 Installation
+* **Drag and Drop**: Drop dataset files directly onto the interface
+* **Configuration Management**: Save and load training configurations as JSON
+* **Real-time Logging**: Live training progress and detailed diagnostics
+* **Model Browser**: Categorized dropdown of popular models by size and purpose
 
-### Quick Start (5 Minutes)
+### Output Options
+
+* **Multiple Quantization Levels**: Choose from q4_k_m to f16 based on your needs
+* **Custom Output Directories**: Specify where to save your trained models
+* **Automatic GGUF Export**: Converts models to GGUF format for Ollama compatibility
+
+## Installation
+
+### Prerequisites
+
+* Python 3.10 or higher
+* NVIDIA GPU with CUDA support (recommended, but not required)
+* Ollama installed ([download here](https://ollama.ai))
+
+### Basic Installation
 
 ```bash
-# 1. Clone the repository
-git clone https://github.com/noosed/NTTuner.git
-cd NTTuner
+# Clone the repository
+git clone https://github.com/noosed/ntech-llm-tuner.git
+cd ntech-llm-tuner
 
-# 2. Install core dependencies
+# Install core dependencies
 pip install torch transformers datasets trl peft accelerate dearpygui
-
-# 3. Run NTTuner
-python NTTuner.py
 ```
 
 ### GPU Installation (Recommended)
 
-For NVIDIA GPU users, get significant speedup with CUDA support:
+For NVIDIA GPU users, install CUDA-enabled PyTorch and additional acceleration libraries:
 
 ```bash
-# 1. Install CUDA-enabled PyTorch (replace cu121 with your CUDA version)
-pip uninstall torch torchvision torchaudio  # Remove CPU version
+# Install CUDA PyTorch
+pip uninstall torch torchvision torchaudio  # Remove CPU version if present
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
 
-# 2. Install GPU acceleration libraries
+# Install GPU acceleration libraries
 pip install bitsandbytes
 
-# 3. (Optional) Install Unsloth for 2-5x faster training
+# Optional: Install Unsloth for 2-5x faster training
 pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"
+```
 
-# 4. Verify GPU detection
+### Verifying GPU Detection
+
+Run the included diagnostic tool to verify your GPU is properly detected:
+
+```bash
 python check_gpu.py
 ```
 
-**CUDA Version Reference:**
-- CUDA 11.8: `cu118`
-- CUDA 12.1: `cu121`
-- CUDA 12.4: `cu124`
+This will check your NVIDIA drivers, PyTorch installation, and CUDA availability.
 
-Check your CUDA version: `nvcc --version` or `nvidia-smi`
+## Usage
 
-### System Requirements
-
-**Minimum:**
-- Python 3.10+
-- 8GB RAM
-- 10GB free disk space
-- Windows 10/11, Linux, or macOS
-
-**Recommended:**
-- NVIDIA GPU with 8GB+ VRAM (RTX 3060 or better)
-- 16GB+ RAM
-- 50GB+ SSD storage
-- CUDA 11.8 or newer
-
-**Model Size Guidelines:**
-
-| Model Size | Min VRAM | Recommended VRAM | Est. Training Time* |
-|-----------|----------|------------------|---------------------|
-| 1B params | 6GB | 8GB | 1-2 hours |
-| 3B params | 8GB | 12GB | 2-4 hours |
-| 7B params | 12GB | 16GB | 4-8 hours |
-| 13B params | 16GB | 24GB | 8-16 hours |
-
-*For 1 epoch on 1000 examples with typical settings
-
----
-
-## 🎓 Usage Guide
-
-### Step 1: Prepare Your Dataset
-
-Your training data should be JSONL format with a `text` field per line:
-
-```jsonl
-{"text": "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are a helpful assistant<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nWhat is machine learning?<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\nMachine learning is a subset of AI that enables systems to learn from data...<|eot_id|>"}
-{"text": "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are a helpful assistant<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nExplain neural networks<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\nNeural networks are computing systems inspired by biological brains...<|eot_id|>"}
-```
-
-**Important:** The exact format depends on your base model's chat template (Llama, Mistral, Qwen, etc.). See [Chat Templates](#chat-templates) below.
-
-**Need help creating datasets?** Use [NTCompanion](https://github.com/noosed/NTCompanion) to scrape and format web content automatically!
-
-### Step 2: Configure Training
-
-**Basic Configuration:**
-
-1. **Select Base Model**
-   - Choose from dropdown (includes installed Ollama models)
-   - Or enter a HuggingFace model name (e.g., `meta-llama/Llama-3.2-3B-Instruct`)
-
-2. **Load Dataset**
-   - Drag & drop your JSONL file
-   - Or click "Browse" to select
-
-3. **Set Output Name**
-   - Give your fine-tuned model a name (e.g., `my-custom-llama`)
-
-**Hyperparameters Explained:**
-
-| Parameter | What It Does | Typical Range | Recommendation |
-|-----------|-------------|---------------|----------------|
-| **LoRA Rank** | Number of parameters to train | 8-128 | 16-64 (higher = more capacity) |
-| **LoRA Alpha** | Scaling factor | Same as rank | Set equal to rank |
-| **Epochs** | Training passes over data | 1-10 | Start with 1-3 |
-| **Batch Size** | Examples per update | 1-32 | 4 (adjust for VRAM) |
-| **Gradient Accumulation** | Updates to accumulate | 1-16 | 4 (increases effective batch) |
-| **Learning Rate** | Step size | 1e-6 to 5e-4 | 2e-5 (standard) |
-| **Max Sequence Length** | Max tokens per example | 512-4096 | 2048 (model dependent) |
-| **Warmup Steps** | Gradual LR increase | 0-500 | 100 (helps stability) |
-
-**Quick Profiles:**
-
-```
-Fast Experimentation:
-├─ Rank: 16
-├─ Epochs: 1
-├─ Batch: 4
-├─ LR: 2e-5
-└─ Time: ~30min (3B model, 500 examples)
-
-Balanced Quality:
-├─ Rank: 32
-├─ Epochs: 3
-├─ Batch: 4
-├─ LR: 2e-5
-└─ Time: ~2hrs (3B model, 1000 examples)
-
-Maximum Quality:
-├─ Rank: 64
-├─ Epochs: 5
-├─ Batch: 2
-├─ LR: 1e-5
-└─ Time: ~8hrs (3B model, 2000 examples)
-```
-
-### Step 3: Start Training
-
-1. Click **"Start Training"**
-2. Monitor progress in the log window
-3. Training runs in background (UI stays responsive)
-4. On completion:
-   - Model is automatically converted to GGUF
-   - Imported to Ollama with your chosen name
-   - Ready to use immediately
-
-### Step 4: Test Your Model
+### Starting the Application
 
 ```bash
-# Run your fine-tuned model
-ollama run my-custom-llama
-
-# Test it
->>> Tell me about the topics you were trained on
+python ollama_trainer_v2.py
 ```
 
----
+### Basic Training Workflow
 
-## 🎨 Chat Templates
+1. **Select a Base Model**
+   * Choose from the dropdown (includes installed Ollama models and popular options)
+   * Or enter a custom HuggingFace model name
 
-Different models use different formatting. Here are the most common:
+2. **Prepare Your Dataset**
+   * Format as JSONL with a `text` field per line
+   * Drag and drop the file onto the interface, or click Browse
 
-### Llama 3.1/3.2/3.3 Format
-```
-<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+3. **Configure Training Parameters**
+   * LoRA Rank: Higher values train more parameters (typically 16-64)
+   * Epochs: Number of training passes (start with 1-3)
+   * Batch Size: Adjust based on available GPU memory
+   * Learning Rate: Usually between 1e-5 and 5e-4
 
-You are a helpful assistant<|eot_id|><|start_header_id|>user<|end_header_id|>
+4. **Set Output Options**
+   * Choose a name for your fine-tuned model
+   * Select output directory
+   * Pick quantization level (q5_k_m is a good balance)
 
-Hello!<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+5. **Start Training**
+   * Click "Start Training"
+   * Monitor progress in the log window
+   * Training runs in the background
 
-Hi! How can I help?<|eot_id|>
-```
+6. **Use Your Model**
+   * After training completes, the model is automatically imported to Ollama
+   * Test it: `ollama run your-model-name`
 
-### Mistral/Mixtral Format
-```
-<s>[INST] Hello! [/INST] Hi! How can I help?</s>
-```
+### Dataset Format
 
-### Qwen Format
-```
-<|im_start|>system
-You are a helpful assistant<|im_end|>
-<|im_start|>user
-Hello!<|im_end|>
-<|im_start|>assistant
-Hi! How can I help?<|im_end|>
-```
+Your training data should be a JSONL file where each line contains a JSON object with a `text` field:
 
-### Phi-4 Format
-```
-<|system|>
-You are a helpful assistant<|end|>
-<|user|>
-Hello!<|end|>
-<|assistant|>
-Hi! How can I help?<|end|>
-```
-
-### Gemma Format
-```
-<bos><start_of_turn>system
-You are a helpful assistant<end_of_turn>
-<start_of_turn>user
-Hello!<end_of_turn>
-<start_of_turn>model
-Hi! How can I help?<end_of_turn>
-```
-
-**Pro Tip:** Use [NTCompanion](https://github.com/noosed/NTCompanion) which automatically formats datasets with the correct template for your chosen model!
-
----
-
-## 🔧 Advanced Features
-
-### Custom LoRA Target Modules
-
-By default, NTTuner targets these modules:
-- `q_proj`, `k_proj`, `v_proj`, `o_proj` (attention layers)
-- `gate_proj`, `up_proj`, `down_proj` (MLP layers)
-
-To customize, edit the `target_modules` list in the code.
-
-### Quantization Options
-
-Choose the right quantization for your use case:
-
-| Quantization | Size | Quality | Speed | Best For |
-|--------------|------|---------|-------|----------|
-| **q4_k_m** | Smallest | Good | Fastest | Low VRAM, quick inference |
-| **q5_k_m** | Medium | Better | Fast | Balanced (recommended) |
-| **q6_k** | Larger | Great | Medium | Quality-focused |
-| **q8_0** | Large | Excellent | Slower | High quality |
-| **f16** | Largest | Perfect | Slowest | Maximum quality, evaluation |
-
-### Manual GGUF Conversion (If Needed)
-
-If auto-conversion fails:
-
-```bash
-# 1. Install llama.cpp
-git clone https://github.com/ggerganov/llama.cpp
-cd llama.cpp && make
-
-# 2. Convert to GGUF
-python llama.cpp/convert-hf-to-gguf.py /path/to/merged_model --outtype f16
-
-# 3. Quantize
-./llama.cpp/llama-quantize model-f16.gguf model-q5_k_m.gguf q5_k_m
-
-# 4. Create Modelfile
-echo "FROM ./model-q5_k_m.gguf" > Modelfile
-
-# 5. Import to Ollama
-ollama create my-model -f Modelfile
-```
-
-### Configuration Files
-
-**Save Configuration:**
-- Click "Save Config" to save all settings as JSON
-- Useful for reproducing training runs
-- Share configs with collaborators
-
-**Load Configuration:**
-- Click "Load Config" to restore saved settings
-- All parameters populate automatically
-
-Example config file:
 ```json
-{
-  "model_name": "meta-llama/Llama-3.2-3B-Instruct",
-  "dataset_path": "/path/to/dataset.jsonl",
-  "output_name": "my-model",
-  "lora_rank": 32,
-  "lora_alpha": 32,
-  "epochs": 3,
-  "batch_size": 4,
-  "learning_rate": 2e-5,
-  "max_seq_length": 2048
-}
+{"text": "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are a helpful assistant<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nWhat is machine learning?<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\nMachine learning is a subset of artificial intelligence...<|eot_id|>"}
+{"text": "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are a helpful assistant<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nExplain neural networks<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\nNeural networks are computing systems inspired by biological neural networks...<|eot_id|>"}
 ```
 
----
+The exact format depends on your base model's chat template. Consult the model's documentation for the correct formatting.
 
-## 🐛 Troubleshooting
+## Configuration Files
+
+### Saving Configurations
+
+Click "Save Config" to save your current settings as a JSON file. This is useful for:
+* Reproducing training runs
+* Sharing configurations with others
+* Maintaining different setups for different projects
+
+### Loading Configurations
+
+Click "Load Config" to restore previously saved settings. All parameters will be populated automatically.
+
+## Troubleshooting
 
 ### GPU Not Detected
 
-**Symptoms:** Training is extremely slow, GPU not showing in logs
+If your GPU isn't being recognized:
 
-**Solutions:**
-1. Verify NVIDIA drivers: `nvidia-smi`
-2. Check PyTorch CUDA support:
-   ```python
-   import torch
-   print(torch.cuda.is_available())  # Should print True
-   print(torch.version.cuda)  # Check CUDA version
-   ```
-3. Reinstall PyTorch with CUDA:
-   ```bash
-   pip uninstall torch torchvision torchaudio
-   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
-   ```
-4. Run diagnostic: `python check_gpu.py`
+1. Verify drivers are installed: `nvidia-smi`
+2. Check if you have CPU-only PyTorch installed
+3. Reinstall PyTorch with CUDA support (see GPU Installation above)
+4. Run `check_gpu.py` for detailed diagnostics
 
 ### Out of Memory Errors
 
-**Symptoms:** `CUDA out of memory` or similar error
-
-**Solutions:**
-1. **Reduce batch size** to 1 or 2
-2. **Increase gradient accumulation** to 8 or 16
-3. **Lower max sequence length** to 1024 or 512
-4. **Reduce LoRA rank** to 8 or 16
-5. **Use a smaller base model** (3B instead of 7B)
-6. **Enable gradient checkpointing** (automatic in NTTuner)
-7. **Use quantized base model** (4-bit loading)
+If training fails with OOM errors:
+* Reduce batch size to 1
+* Increase gradient accumulation steps
+* Lower max sequence length
+* Reduce LoRA rank
+* Use a smaller base model
 
 ### Training is Very Slow
 
-**For CPU users:**
-- CPU training is 10-50x slower than GPU
-- Consider using Google Colab (free GPU) or cloud services
-- Use smaller models (1B-3B) for experimentation
+For CPU users:
+* Training on CPU is expected to be extremely slow
+* Consider using Google Colab (free GPU) or cloud services
+* Use smaller models like TinyLlama for testing
 
-**For GPU users:**
-- Install Unsloth: `pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"`
-- Verify CUDA PyTorch: `python -c "import torch; print(torch.version.cuda)"`
-- Check GPU utilization: `nvidia-smi` (should show high usage during training)
-- Ensure batch size isn't too small
+For GPU users:
+* Install Unsloth for 2-5x speedup
+* Ensure CUDA-enabled PyTorch is installed
+* Check GPU utilization with `nvidia-smi`
 
-### Dataset Format Errors
+### Model Import Fails
 
-**Symptoms:** `KeyError: 'text'` or format validation fails
+If Ollama import fails:
+* Verify Ollama is installed: `ollama --version`
+* Check if the GGUF file was created in the output directory
+* Try manual import: `cd output_directory && ollama create model-name -f Modelfile`
 
-**Solutions:**
-1. Verify JSONL format (one JSON object per line)
-2. Each line must have a `"text"` field
-3. No trailing commas or comments
-4. Use proper chat template for your model
-5. Validate with: `python -m json.tool < dataset.jsonl`
+## System Requirements
 
-**Example validation script:**
-```python
-import json
+### Minimum Requirements
 
-with open('dataset.jsonl', 'r') as f:
-    for i, line in enumerate(f, 1):
-        try:
-            obj = json.loads(line)
-            assert 'text' in obj, f"Line {i}: Missing 'text' field"
-            assert len(obj['text']) > 0, f"Line {i}: Empty text"
-        except json.JSONDecodeError as e:
-            print(f"Line {i}: Invalid JSON - {e}")
-```
+* **OS**: Windows 10/11, Linux, or macOS
+* **RAM**: 8GB (16GB recommended)
+* **Storage**: 10GB free space for models and outputs
+* **Python**: 3.10 or higher
 
-### Ollama Import Fails
+### Recommended Requirements
 
-**Symptoms:** Model trains but doesn't appear in Ollama
+* **GPU**: NVIDIA GPU with 8GB+ VRAM (RTX 3060, RTX 3080, etc.)
+* **RAM**: 16GB or more
+* **Storage**: SSD with 50GB+ free space
+* **CUDA**: Version 11.8 or higher
 
-**Solutions:**
-1. Verify Ollama is installed: `ollama --version`
-2. Check if Ollama is running: `ollama list`
-3. Verify GGUF file exists in output directory
-4. Try manual import:
-   ```bash
-   cd /path/to/output
-   echo "FROM ./model.gguf" > Modelfile
-   ollama create my-model -f Modelfile
-   ```
-5. Check Ollama logs for errors
+### Model Size Guidelines
 
-### Model Quality Issues
+| Model Size | Minimum VRAM | Recommended VRAM | Training Time (est) |
+|-----------|--------------|------------------|---------------------|
+| 1B params | 6GB          | 8GB              | 1-2 hours           |
+| 3B params | 8GB          | 12GB             | 2-4 hours           |
+| 7B params | 12GB         | 16GB             | 4-8 hours           |
+| 13B params| 16GB         | 24GB             | 8-16 hours          |
 
-**Symptoms:** Model gives poor or nonsensical outputs
+Times are estimates for 1 epoch on 1000 examples with typical settings.
 
-**Solutions:**
-1. **Increase training epochs** to 3-5
-2. **Increase LoRA rank** to 32-64
-3. **Improve dataset quality** (more examples, better formatting)
-4. **Adjust learning rate** (try 1e-5 or 5e-5)
-5. **Ensure proper chat template** formatting
-6. **Add more diverse examples** to dataset
-7. **Check base model is appropriate** for your task
+## Advanced Usage
 
----
+### Custom LoRA Targets
 
-## 📚 Best Practices
+The application targets these modules by default:
+* q_proj, k_proj, v_proj, o_proj
+* gate_proj, up_proj, down_proj
 
-### Dataset Creation
+For custom targeting, modify the `target_modules` list in the code.
 
-✅ **Do:**
-- Use 500-5000 high-quality examples
-- Maintain consistent formatting
-- Include diverse examples
-- Validate JSON before training
-- Test with small dataset first
+### Manual GGUF Conversion
 
-❌ **Don't:**
-- Mix different chat templates
-- Include corrupted/truncated examples
-- Use extremely long sequences (>4K tokens)
-- Train on low-quality data
-- Ignore validation errors
+If you're using CPU training or Unsloth isn't available, you'll need to manually convert to GGUF:
 
-### Training Configuration
+1. Training saves a merged HuggingFace model
+2. Install llama.cpp: `git clone https://github.com/ggerganov/llama.cpp`
+3. Convert: `python llama.cpp/convert-hf-to-gguf.py merged_model --outtype f16`
+4. Quantize: `llama.cpp/llama-quantize model-f16.gguf model-q5_k_m.gguf q5_k_m`
+5. Import: `ollama create model-name -f Modelfile`
 
-✅ **Do:**
-- Start with recommended defaults
-- Save configurations for reproduction
-- Monitor training logs for issues
-- Test models after training
-- Iterate based on results
+## Contributing
 
-❌ **Don't:**
-- Use learning rate >1e-4 without testing
-- Set batch size too high for your VRAM
-- Skip warmup steps
-- Ignore convergence issues
-- Overtrain (too many epochs)
+Contributions are welcome. If you encounter bugs or have feature requests, please open an issue on GitHub.
 
-### Model Deployment
+## License
 
-✅ **Do:**
-- Test thoroughly before production
-- Document your training configuration
-- Keep original dataset for iteration
-- Monitor model performance
-- Version your models
+This project is provided as-is for educational and research purposes. Please respect the licenses of any base models and datasets you use with this tool.
 
-❌ **Don't:**
-- Deploy untested models
-- Delete training data immediately
-- Ignore user feedback
-- Skip quality evaluation
-- Use inappropriate quantization
+## Acknowledgments
+
+Built with:
+* [Unsloth](https://github.com/unslothai/unsloth) - Fast LLM fine-tuning
+* [Transformers](https://github.com/huggingface/transformers) - Model architecture and training
+* [PEFT](https://github.com/huggingface/peft) - Parameter-efficient fine-tuning
+* [TRL](https://github.com/huggingface/trl) - Transformer reinforcement learning
+* [DearPyGUI](https://github.com/hoffstadt/DearPyGui) - GPU-accelerated GUI framework
+* [Ollama](https://ollama.ai) - Local LLM runtime
+
+## Links
+
+* **Repository**: https://github.com/noosed/nttuner
+* **Issues**: Fork and fix!
+* **Ollama**: https://ollama.ai
+* **Unsloth**: https://github.com/unslothai/unsloth
 
 ---
 
-## 🔬 Technical Details
-
-### LoRA (Low-Rank Adaptation)
-
-NTTuner uses LoRA for parameter-efficient fine-tuning:
-
-- **Rank (r)**: Determines trainable parameters (higher = more capacity)
-- **Alpha (α)**: Scaling factor (typically set equal to rank)
-- **Target Modules**: Specific layers to adapt
-- **Trainable Params**: Typically 0.1-1% of full model
-
-**Formula:** Full weight = Frozen base + (LoRA_A × LoRA_B × α/r)
-
-### Training Process
-
-1. **Load Base Model**: HuggingFace model + tokenizer
-2. **Prepare LoRA**: Add adapter layers to target modules
-3. **Load Dataset**: JSONL → HuggingFace Dataset
-4. **Training Loop**: SFTTrainer with specified hyperparameters
-5. **Merge Adapters**: Combine LoRA weights with base model
-6. **Export GGUF**: Convert to GGUF format for Ollama
-7. **Quantize**: Apply selected quantization level
-8. **Import**: Add to Ollama model library
-
-### GPU Acceleration
-
-**With Unsloth:**
-- Custom CUDA kernels for 2-5x speedup
-- Memory-efficient attention
-- Optimized backward pass
-- Automatic mixed precision
-
-**Standard Training:**
-- PyTorch native CUDA
-- Flash Attention 2 (if available)
-- Gradient checkpointing
-- BitsAndBytes quantization
-
----
-
-## 🤝 Contributing
-
-Contributions welcome! If you find bugs or have feature requests:
-
-1. Check existing issues
-2. Create detailed bug report or feature request
-3. Include system info, logs, and reproducible steps
-4. Submit pull requests with clear descriptions
-
----
-
-## 📖 Additional Resources
-
-### Official Links
-- **Repository**: https://github.com/noosed/NTTuner
-- **NTCompanion** (Dataset Creator): https://github.com/noosed/NTCompanion
-- **Ollama**: https://ollama.ai
-- **Unsloth**: https://github.com/unslothai/unsloth
-
-### Learning Resources
-- [Fine-tuning Guide](https://huggingface.co/docs/transformers/training)
-- [LoRA Paper](https://arxiv.org/abs/2106.09685)
-- [Chat Templates Guide](https://huggingface.co/docs/transformers/chat_templating)
-- [Ollama Documentation](https://github.com/ollama/ollama/tree/main/docs)
-
-### Community
-- GitHub Issues: [Report bugs/requests](https://github.com/noosed/NTTuner/issues)
-- Ollama Discord: https://discord.gg/ollama
-
----
-
-## 📄 License
-
-This project is provided as-is for educational and research purposes. Please respect the licenses of any base models and datasets you use.
-
-**Model Licenses:**
-- Llama models: [Meta's Community License](https://ai.meta.com/llama/license/)
-- Mistral models: [Apache 2.0](https://www.apache.org/licenses/LICENSE-2.0)
-- Qwen models: Check [HuggingFace page](https://huggingface.co/Qwen)
-
----
-
-## 🙏 Acknowledgments
-
-Built with excellent open-source tools:
-
-- **[Unsloth](https://github.com/unslothai/unsloth)** - Fast LLM fine-tuning
-- **[Transformers](https://github.com/huggingface/transformers)** - Model architecture
-- **[PEFT](https://github.com/huggingface/peft)** - Parameter-efficient training
-- **[TRL](https://github.com/huggingface/trl)** - Transformer RL and SFT
-- **[DearPyGUI](https://github.com/hoffstadt/DearPyGui)** - GPU-accelerated interface
-- **[Ollama](https://ollama.ai)** - Local LLM runtime
-- **[llama.cpp](https://github.com/ggerganov/llama.cpp)** - GGUF conversion
-
-Special thanks to the AI/ML community for making these tools accessible!
-
----
-
-## ⭐ Support This Project
-
-If NTTuner helps you:
-- ⭐ Star the repository
-- 🐛 Report bugs and suggest features
-- 📖 Improve documentation
-- 💬 Share your success stories
-
+Created by [github.com/noosed](https://github.com/noosed)
 **Created by [@noosed](https://github.com/noosed)**
 
----
 
-## 🚀 Quick Command Reference
-
-```bash
-# Installation
-git clone https://github.com/noosed/NTTuner.git
-cd NTTuner
-pip install torch transformers datasets trl peft accelerate dearpygui
-
-# GPU Setup (CUDA 12.1)
-pip install torch --index-url https://download.pytorch.org/whl/cu121
-pip install bitsandbytes
-pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"
-
-# Run NTTuner
-python NTTuner.py
-
-# Check GPU
-python check_gpu.py
-
-# Test trained model
-ollama run my-model
-
-# List Ollama models
-ollama list
-
-# Remove model
-ollama rm my-model
-```
 
 Happy fine-tuning! 🎉
 Created by [noosed](https://github.com/noosed)
