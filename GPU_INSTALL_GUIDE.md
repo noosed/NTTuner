@@ -76,7 +76,7 @@ python -c "import torch; print('CUDA:', torch.cuda.is_available())"
 
 
 ```bash
-python NTTuner_Enhanced.py
+python NTTuner.py
 ```
 
 The GUI will show your detected GPU and provide specific guidance for your hardware.
