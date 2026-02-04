@@ -97,9 +97,5 @@ The GUI will show your detected GPU and provide specific guidance for your hardw
 - Use smaller model
 - Enable gradient checkpointing
 
-## Need Help?
 
-Check the detailed documentation:
-- `ENHANCED_FEATURES.md` - Complete feature list
-- `CHANGES_SUMMARY.md` - What changed from original
 - github.com/noosed/nttuner
