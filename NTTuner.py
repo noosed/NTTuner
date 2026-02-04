@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
 """
+NTTuner Professional - Enhanced Multi-Backend GPU Support
+Original: github.com/noosed/nttuner
+Enhanced: Added Vulkan and OpenCL support for non-NVIDIA GPUs
+
 INSTALLATION INSTRUCTIONS:
 ==========================
 
@@ -69,12 +73,12 @@ def detect_vulkan_gpu():
         import vulkan as vk
         instance = vk.VkInstance()
         physical_devices = vk.vkEnumeratePhysicalDevices(instance)
-        
+
         if physical_devices:
             props = vk.vkGetPhysicalDeviceProperties(physical_devices[0])
             mem_props = vk.vkGetPhysicalDeviceMemoryProperties(physical_devices[0])
             heap_sizes = [mem_props.memoryHeaps[i].size for i in range(mem_props.memoryHeapCount)]
-            
+
             return {
                 "available": True,
                 "device_name": props.deviceName.decode('utf-8'),
@@ -91,7 +95,7 @@ def detect_opencl_gpu():
     try:
         import pyopencl as cl
         platforms = cl.get_platforms()
-        
+
         for platform in platforms:
             devices = platform.get_devices(device_type=cl.device_type.GPU)
             if devices:
@@ -236,7 +240,7 @@ def detect_gpu_comprehensive():
         pass
 
     # CPU Fallback - but first check for Vulkan/OpenCL support
-    
+
     # Try Vulkan for Intel/AMD/other GPUs
     vulkan_info = detect_vulkan_gpu()
     if vulkan_info["available"]:
@@ -247,15 +251,15 @@ def detect_gpu_comprehensive():
         gpu_info["gpu_count"] = vulkan_info["device_count"]
         gpu_info["gpu_memory"] = vulkan_info["memory_gb"]
         gpu_info["vulkan_available"] = True
-        
+
         gpu_info["details"].append("Vulkan Compute API")
         gpu_info["details"].append(f"Device: {gpu_info['gpu_name']}")
         gpu_info["details"].append(f"VRAM: {gpu_info['gpu_memory']:.1f} GB")
         gpu_info["warnings"].append("Vulkan backend - requires torch-directml or ONNX Runtime")
         gpu_info["warnings"].append("For training: pip install torch-directml (Windows) or use ONNX Runtime")
-        
+
         return gpu_info
-    
+
     # Try OpenCL for Intel/AMD/other GPUs
     opencl_info = detect_opencl_gpu()
     if opencl_info["available"]:
@@ -266,16 +270,16 @@ def detect_gpu_comprehensive():
         gpu_info["gpu_count"] = opencl_info["device_count"]
         gpu_info["gpu_memory"] = opencl_info["memory_gb"]
         gpu_info["opencl_available"] = True
-        
+
         gpu_info["details"].append(f"OpenCL {opencl_info['platform_version']}")
         gpu_info["details"].append(f"Vendor: {opencl_info['vendor']}")
         gpu_info["details"].append(f"Device: {gpu_info['gpu_name']}")
         gpu_info["details"].append(f"VRAM: {gpu_info['gpu_memory']:.1f} GB")
         gpu_info["warnings"].append("OpenCL backend - requires PlaidML or ONNX Runtime")
         gpu_info["warnings"].append("For training: pip install plaidml-keras plaidml or use ONNX Runtime")
-        
+
         return gpu_info
-    
+
     # Check if libraries are at least installed
     try:
         import vulkan
@@ -283,24 +287,24 @@ def detect_gpu_comprehensive():
         gpu_info["details"].append("Vulkan library installed (no devices detected)")
     except ImportError:
         pass
-    
+
     try:
         import pyopencl
         gpu_info["opencl_available"] = True
         gpu_info["details"].append("OpenCL library installed (no devices detected)")
     except ImportError:
         pass
-    
+
     # Pure CPU mode
     gpu_info["details"].append("No GPU detected - using CPU")
     gpu_info["details"].append("Training will be very slow")
-    
+
     # Provide installation suggestions for non-NVIDIA users
     if not gpu_info["vulkan_available"] and not gpu_info["opencl_available"]:
         gpu_info["warnings"].append("For non-NVIDIA GPUs:")
         gpu_info["warnings"].append("  AMD: pip install torch --index-url https://download.pytorch.org/whl/rocm6.0")
         gpu_info["warnings"].append("  Intel/Other: pip install vulkan pyopencl torch-directml")
-    
+
     gpu_info["warnings"].append("Consider cloud GPU: Google Colab, Vast.ai, RunPod")
 
     return gpu_info
@@ -1590,7 +1594,7 @@ class GGUFExportManager:
         try:
             # Detect chat template based on base model
             chat_template = self._detect_chat_template(base_model_name or model_name)
-            
+
             # Create Modelfile with proper template
             modelfile_content = f"""FROM {gguf_path}
 
@@ -1605,11 +1609,11 @@ PARAMETER stop "{chat_template['stop_token']}"
 # System message
 SYSTEM \"""You are a helpful AI assistant.\"""
 """
-            
+
             modelfile_path = gguf_path.parent / "Modelfile"
             with open(modelfile_path, 'w', encoding='utf-8') as f:
                 f.write(modelfile_content)
-            
+
             self.log(f"Created Modelfile with {chat_template['name']} template\n")
 
             # Run ollama create
@@ -1632,7 +1636,7 @@ SYSTEM \"""You are a helpful AI assistant.\"""
     def _detect_chat_template(self, model_name: str) -> Dict[str, str]:
         """Detect appropriate chat template for the model"""
         model_lower = model_name.lower()
-        
+
         # ChatML format (default and most compatible)
         if any(x in model_lower for x in ['mistral', 'mixtral', 'phi', 'qwen', 'yi']):
             return {
@@ -1643,7 +1647,7 @@ SYSTEM \"""You are a helpful AI assistant.\"""
                 'assistant_suffix': '<|im_end|>\\n',
                 'stop_token': '<|im_end|>'
             }
-        
+
         # Llama3 format
         elif any(x in model_lower for x in ['llama-3', 'llama3']):
             return {
@@ -1654,7 +1658,7 @@ SYSTEM \"""You are a helpful AI assistant.\"""
                 'assistant_suffix': '<|eot_id|>',
                 'stop_token': '<|eot_id|>'
             }
-        
+
         # Llama2 format
         elif any(x in model_lower for x in ['llama-2', 'llama2']):
             return {
@@ -1665,7 +1669,7 @@ SYSTEM \"""You are a helpful AI assistant.\"""
                 'assistant_suffix': ' </s>',
                 'stop_token': '</s>'
             }
-        
+
         # Alpaca format
         elif 'alpaca' in model_lower:
             return {
@@ -1676,8 +1680,8 @@ SYSTEM \"""You are a helpful AI assistant.\"""
                 'assistant_suffix': '\\n\\n',
                 'stop_token': '###'
             }
-        
-        # Vicuna format  
+
+        # Vicuna format
         elif 'vicuna' in model_lower:
             return {
                 'name': 'Vicuna',
@@ -1687,7 +1691,7 @@ SYSTEM \"""You are a helpful AI assistant.\"""
                 'assistant_suffix': '\\n',
                 'stop_token': 'USER:'
             }
-        
+
         # Gemma format
         elif 'gemma' in model_lower:
             return {
@@ -1698,7 +1702,7 @@ SYSTEM \"""You are a helpful AI assistant.\"""
                 'assistant_suffix': '<end_of_turn>\\n',
                 'stop_token': '<end_of_turn>'
             }
-        
+
         # Default to ChatML (most widely supported)
         else:
             self.log(f"  Using default ChatML template for: {model_name}\n")
@@ -1861,7 +1865,7 @@ class TrainingManager:
             else:
                 backend_name = GPU_TYPE if HAS_GPU else "CPU"
                 self.log(f"Using standard Transformers ({backend_name})...\n")
-                
+
                 # Special handling for Vulkan/OpenCL backends
                 if GPU_BACKEND in ["vulkan", "opencl"]:
                     self.log(f"NOTE: {GPU_BACKEND.upper()} detected but not directly supported by PyTorch\n")
