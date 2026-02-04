@@ -264,9 +264,3 @@ Built with:
 ---
 
 Created by [github.com/noosed](https://github.com/noosed)
-**Created by [@noosed](https://github.com/noosed)**
-
-
-
-Happy fine-tuning! 🎉
-Created by [noosed](https://github.com/noosed)
