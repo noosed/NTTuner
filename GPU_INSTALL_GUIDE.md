@@ -74,7 +74,6 @@ python -c "import torch; print('CUDA:', torch.cuda.is_available())"
 
 *GPU detected but requires additional packages for acceleration
 
-## Running NTTuner
 
 ```bash
 python NTTuner_Enhanced.py
@@ -103,4 +102,4 @@ The GUI will show your detected GPU and provide specific guidance for your hardw
 Check the detailed documentation:
 - `ENHANCED_FEATURES.md` - Complete feature list
 - `CHANGES_SUMMARY.md` - What changed from original
-- Original repo: github.com/noosed/nttuner
+- github.com/noosed/nttuner
