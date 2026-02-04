@@ -6,7 +6,6 @@
 [![Stars](https://img.shields.io/github/stars/noosed/NTTuner)](https://github.com/noosed/NTTuner/stargazers)
 
 
-
 **Desktop GUI for fine-tuning Large Language Models with automatic Ollama deployment**
 
 NTTuner is a user-friendly desktop application that makes fine-tuning LLMs accessible to everyone. Whether you're a researcher, developer, or AI enthusiast, NTTuner handles the complexity of LoRA training, GGUF conversion, and Ollama integration through an intuitive graphical interface.
