@@ -7,39 +7,7 @@ try:
     CHRONICALS_AVAILABLE = True
 except ImportError:
     CHRONICALS_AVAILABLE = False
-
-# DearPyGui is lazy loaded to prevent early crashes
-dpg = None
-
-
-def _init_dpg():
-    """Initialize DearPyGui only when needed"""
-    global dpg
-    if dpg is None:
-        try:
-            import dearpygui.dearpygui as _dpg
-            dpg = _dpg
-
-            # Windows DPI fix
-            if sys.platform == "win32":
-                try:
-                    import ctypes
-                    try:
-                        ctypes.windll.shcore.SetProcessDpiAwareness(2)
-                    except:
-                        ctypes.windll.user32.SetProcessDPIAware()
-                except:
-                    pass
-
-            return True
-        except Exception as e:
-            print(f"ERROR: Could not load DearPyGui: {e}")
-            print("Install with: pip install dearpygui")
-            return False
-    return True
-
-
-# import dearpygui.dearpygui as dpg  # Lazy loaded
+import dearpygui.dearpygui as dpg
 import subprocess
 import os
 import json
@@ -54,148 +22,10 @@ import traceback
 import sys
 import shutil
 
-# ═══════════════════════════════════════════════════════════════════════
-# CRASH PROTECTION & ERROR HANDLING
-# ═══════════════════════════════════════════════════════════════════════
-
-import ctypes
-import signal
-import atexit
-
-
-def safe_exit():
-    """Safe cleanup on exit"""
-    try:
-        # import dearpygui.dearpygui as dpg  # Lazy loaded
-        if dpg.is_dearpygui_running():
-            dpg.stop_dearpygui()
-            dpg.destroy_context()
-    except:
-        pass
-
-
-atexit.register(safe_exit)
-
-
-def signal_handler(signum, frame):
-    """Handle crash signals"""
-    print(f"\n[!] Received signal {signum}, exiting safely...")
-    safe_exit()
-    sys.exit(1)
-
-
-# Register signal handlers
-if sys.platform == "win32":
-    # Windows-specific crash handling
-    try:
-        kernel32 = ctypes.windll.kernel32
-        kernel32.SetErrorMode(0x0001 | 0x0002)  # SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX
-    except:
-        pass
-else:
-    signal.signal(signal.SIGSEGV, signal_handler)
-    signal.signal(signal.SIGABRT, signal_handler)
-
 
 # ═══════════════════════════════════════════════════════════════════════
-
-def safe_subprocess_run(cmd, **kwargs):
-    """Safely run subprocess with crash protection"""
-    try:
-        # Set default timeout if not specified
-        if 'timeout' not in kwargs:
-            kwargs['timeout'] = 3600
-
-        # Ensure we capture output
-        if 'capture_output' not in kwargs:
-            kwargs['capture_output'] = True
-        if 'text' not in kwargs:
-            kwargs['text'] = True
-
-        # On Windows, add CREATE_NO_WINDOW flag to avoid popup windows
-        if sys.platform == "win32":
-            import subprocess
-            if 'creationflags' not in kwargs:
-                kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
-
-        return safe_subprocess_run(cmd, **kwargs)
-    except subprocess.TimeoutExpired as e:
-        # Return a fake result object
-        class TimeoutResult:
-            returncode = -1
-            stdout = ""
-            stderr = f"Process timed out after {e.timeout} seconds"
-
-        return TimeoutResult()
-    except FileNotFoundError as e:
-        class NotFoundResult:
-            returncode = -1
-            stdout = ""
-            stderr = f"Command not found: {cmd[0]}"
-
-        return NotFoundResult()
-    except MemoryError:
-        class MemoryResult:
-            returncode = -1
-            stdout = ""
-            stderr = "Out of memory while running process"
-
-        return MemoryResult()
-    except Exception as e:
-        class ErrorResult:
-            returncode = -1
-            stdout = ""
-            stderr = f"Process error: {str(e)}"
-
-        return ErrorResult()
-
-
 # ENHANCED GPU DETECTION
 # ═══════════════════════════════════════════════════════════════════════
-
-
-# Set memory limits to prevent crashes
-def set_memory_limits():
-    """Set reasonable memory limits to prevent crashes"""
-    if sys.platform == "win32":
-        try:
-            import psutil
-            available_memory = psutil.virtual_memory().available
-            # Use at most 80% of available memory
-            max_memory = int(available_memory * 0.8)
-
-            # Set process memory limit (Windows)
-            import ctypes
-            kernel32 = ctypes.windll.kernel32
-            job = kernel32.CreateJobObjectA(None, None)
-            if job:
-                # JOBOBJECT_EXTENDED_LIMIT_INFORMATION structure
-                class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
-                    _fields_ = [
-                        ("BasicLimitInformation", ctypes.c_byte * 72),
-                        ("IoInfo", ctypes.c_byte * 24),
-                        ("ProcessMemoryLimit", ctypes.c_size_t),
-                        ("JobMemoryLimit", ctypes.c_size_t),
-                    ]
-
-                limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
-                limits.ProcessMemoryLimit = max_memory
-
-                # Set the job limits
-                kernel32.SetInformationJobObject(
-                    job, 9,  # JobObjectExtendedLimitInformation
-                    ctypes.byref(limits),
-                    ctypes.sizeof(limits)
-                )
-        except:
-            pass  # Silent fail if psutil not available or limits can't be set
-
-
-try:
-    set_memory_limits()
-except:
-    pass
-
 
 def detect_gpu_comprehensive():
     """
@@ -228,7 +58,8 @@ def detect_gpu_comprehensive():
 
     # CUDA Detection (NVIDIA)
     try:
-        if torch.cuda.is_available():
+        cuda_available = torch.cuda.is_available()
+        if cuda_available:
             gpu_info["has_gpu"] = True
             gpu_info["gpu_type"] = "CUDA"
             gpu_info["backend"] = "cuda"
@@ -260,8 +91,16 @@ def detect_gpu_comprehensive():
                 gpu_info["warnings"].append("bitsandbytes not available - no 4-bit/8-bit")
 
             return gpu_info
-    except Exception:
-        pass
+        else:
+            # CUDA not available - check why
+            if hasattr(torch.version, 'cuda') and torch.version.cuda:
+                gpu_info["warnings"].append(f"PyTorch built with CUDA {torch.version.cuda}, but no GPU detected")
+                gpu_info["warnings"].append("Check: nvidia-smi or verify CUDA drivers installed")
+            else:
+                gpu_info["warnings"].append("PyTorch not built with CUDA support")
+                gpu_info["warnings"].append("Install CUDA version: pip install torch --index-url https://download.pytorch.org/whl/cu121")
+    except Exception as e:
+        gpu_info["warnings"].append(f"CUDA detection error: {str(e)}")
 
     # MPS Detection (Apple Silicon)
     try:
@@ -345,7 +184,7 @@ GPU_BACKEND = GPU_INFO["backend"]
 def get_ollama_models():
     """Get list of installed Ollama models"""
     try:
-        result = safe_subprocess_run(["ollama", "list"], capture_output=True, text=True, timeout=5)
+        result = subprocess.run(["ollama", "list"], capture_output=True, text=True, timeout=5)
         if result.returncode == 0:
             lines = result.stdout.strip().split('\n')
             if len(lines) > 1:
@@ -1161,607 +1000,575 @@ class DatasetHandler:
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# REWORKED GGUF EXPORT SYSTEM - More Reliable and User-Friendly
+# Added: GGUF EXPORT MANAGER (2026)
 # ════════════════════════════════════════════════════════════════════════════
 
-import subprocess
-import os
-import sys
-import shutil
-from pathlib import Path
-from typing import Optional, Dict, Any, List, Tuple
-from dataclasses import dataclass, field
-
-
-# ────────────────────────────────────────────────────────────────────────────
-# GGUF CONVERSION BACKENDS - Multiple fallback options
-# ────────────────────────────────────────────────────────────────────────────
-
-class GGUFConversionBackend:
-    """Abstract base for GGUF conversion methods"""
+class GGUFExportManager:
+    """
+    Handles advanced GGUF export with full llama.cpp quantization options.
+    Compatible with both Unsloth-trained and native PEFT/transformers LoRA adapters.
+    """
 
     def __init__(self, log_callback):
         self.log = log_callback
+        # Use the background-cached result so __init__ never blocks the
+        # main thread with a drive scan.
+        self._llama_cpp_root: Optional[Path] = _derive_llama_cpp_root()
+        self.quantize_path = _get_cached_quantize()
 
-    def is_available(self) -> bool:
-        """Check if this backend is available"""
-        raise NotImplementedError
+    def detect_adapter_type(self, model_path: Path) -> str:
+        """Detect if the adapter is Unsloth or standard PEFT"""
+        adapter_config = model_path / "adapter_config.json"
+        if adapter_config.exists():
+            try:
+                with open(adapter_config, 'r') as f:
+                    config = json.load(f)
+                if "unsloth" in str(config).lower():
+                    return "unsloth"
+                return "peft"
+            except:
+                pass
 
-    def convert_to_f16(self, model_path: Path, output_file: Path) -> Tuple[bool, str]:
-        """Convert HF model to F16 GGUF"""
-        raise NotImplementedError
+        # Check for Unsloth-specific files
+        if (model_path / "unsloth_config.json").exists():
+            return "unsloth"
 
-    def quantize(self, input_gguf: Path, output_file: Path, quant_type: str,
-                 imatrix_path: Optional[str] = None) -> Tuple[bool, str]:
-        """Quantize F16 GGUF to specified type"""
-        raise NotImplementedError
+        return "unknown"
 
+    def convert_to_gguf_f16(self, model_path: Path, output_path: Path,
+                            gguf_config: GGUFExportConfig) -> Tuple[bool, str, Optional[Path]]:
+        """
+        Convert model to F16 GGUF format (base for further quantization).
+        Handles both merged models and LoRA-only exports.
+        """
+        self.log("Converting to GGUF F16 base format...\n")
 
-class LlamaCppBackend(GGUFConversionBackend):
-    """llama.cpp python scripts backend"""
+        # ── pre-flight: convert_hf_to_gguf.py requires config.json ──────────
+        if not (model_path / "config.json").exists():
+            err = (
+                f"config.json not found in {model_path}.\n"
+                "  This usually means the directory contains only a LoRA adapter\n"
+                "  (adapter_config.json) and not a full merged model.\n"
+                "  Make sure merge_lora_to_base() ran successfully before export.\n"
+            )
+            self.log(f"ERROR: {err}")
+            return False, err, None
+        # ─────────────────────────────────────────────────────────────────────
 
-    def __init__(self, log_callback):
-        super().__init__(log_callback)
-        self.convert_script = None
-        self.quantize_binary = None
-        self._scan_tools()
+        f16_output = output_path / "model-f16.gguf"
 
-    def _scan_tools(self):
-        """Scan for llama.cpp tools"""
-        # Find convert script
+        try:
+            # Try Unsloth's built-in GGUF export first (if available and applicable)
+            if HAS_UNSLOTH and not gguf_config.skip_merge_lora_only:
+                try:
+                    self.log("Attempting Unsloth GGUF export...\n")
+                    from unsloth import FastLanguageModel
+
+                    # Load the model
+                    model, tokenizer = FastLanguageModel.from_pretrained(
+                        model_name=str(model_path),
+                        max_seq_length=2048,
+                        load_in_4bit=False,
+                    )
+
+                    # Save to GGUF
+                    model.save_pretrained_gguf(
+                        str(output_path),
+                        tokenizer,
+                        quantization_method="f16",
+                    )
+
+                    # Find the output file
+                    gguf_files = list(output_path.glob("*.gguf"))
+                    if gguf_files:
+                        # Rename to standard name
+                        gguf_files[0].rename(f16_output)
+                        self.log(f"Unsloth GGUF export successful: {f16_output}\n")
+                        return True, "OK", f16_output
+
+                except Exception as e:
+                    self.log(f"Unsloth export failed, falling back to llama.cpp: {str(e)}\n")
+
+            # Fallback: Use llama.cpp convert script
+            convert_script = self._find_convert_script()
+            if convert_script:
+                self.log(f"Using convert script: {convert_script}\n")
+
+                cmd = [
+                    sys.executable, str(convert_script),
+                    str(model_path),
+                    "--outfile", str(f16_output),
+                    "--outtype", "f16",
+                ]
+
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+
+                if result.returncode == 0 and f16_output.exists():
+                    self.log(f"F16 GGUF created: {f16_output}\n")
+                    return True, "OK", f16_output
+                else:
+                    error_msg = result.stderr or result.stdout or "Unknown error"
+                    self.log(f"Convert failed: {error_msg}\n")
+                    return False, error_msg, None
+
+            # Try transformers built-in if available
+            try:
+                self.log("Attempting transformers GGUF export...\n")
+                from transformers import AutoModelForCausalLM, AutoTokenizer
+
+                model = AutoModelForCausalLM.from_pretrained(str(model_path))
+                tokenizer = AutoTokenizer.from_pretrained(str(model_path))
+
+                # Some newer transformers versions support GGUF export
+                if hasattr(model, 'save_pretrained_gguf'):
+                    model.save_pretrained_gguf(str(f16_output), tokenizer)
+                    if f16_output.exists():
+                        return True, "OK", f16_output
+            except Exception as e:
+                self.log(f"Transformers GGUF export not available: {str(e)}\n")
+
+            return False, "No suitable GGUF conversion method found", None
+
+        except Exception as e:
+            error_msg = f"F16 conversion failed: {str(e)}"
+            self.log(f"ERROR: {error_msg}\n")
+            return False, error_msg, None
+
+    def _find_convert_script(self) -> Optional[Path]:
+        """Find llama.cpp convert script"""
         script_names = [
             "convert_hf_to_gguf.py",
             "convert-hf-to-gguf.py",
-            "convert.py"
+            "convert.py",
         ]
 
+        _script_dir = Path(sys.argv[0]).resolve().parent if sys.argv else Path.cwd()
         search_paths = [
-            Path.cwd() / "llama.cpp",
+            _script_dir / "llama.cpp",
+            _script_dir,
             Path.home() / "llama.cpp",
             Path("/usr/local/share/llama.cpp"),
             Path("/opt/llama.cpp"),
-            Path(sys.executable).parent.parent / "llama.cpp",  # Python venv
+            Path.cwd() / "llama.cpp",
         ]
 
-        # Check if llama-cpp-python is installed
+        # Also honour the user-supplied quantize-path's parent – if they
+        # browsed to llama-quantize.exe the convert script is likely nearby.
+        if self.quantize_path:
+            search_paths.insert(0, Path(self.quantize_path).resolve().parent)
+            search_paths.insert(1, Path(self.quantize_path).resolve().parent.parent)
+
+        for base_path in search_paths:
+            for script_name in script_names:
+                script_path = base_path / script_name
+                if script_path.exists():
+                    return script_path
+
+        # Check if installed via pip
         try:
             import llama_cpp
-            pkg_path = Path(llama_cpp.__file__).parent
-            search_paths.insert(0, pkg_path)
-            search_paths.insert(0, pkg_path.parent / "llama.cpp")
-        except ImportError:
+            _file = getattr(llama_cpp, "__file__", None)
+            if _file:
+                pkg_path = Path(_file).parent
+                for script_name in script_names:
+                    script_path = pkg_path / script_name
+                    if script_path.exists():
+                        return script_path
+        except (ImportError, AttributeError, TypeError):
             pass
 
-        for base in search_paths:
-            if not base.exists():
-                continue
-            for name in script_names:
-                script = base / name
-                if script.exists():
-                    self.convert_script = script
-                    self.log(f"[OK] Found convert script: {script}\n")
-                    break
-            if self.convert_script:
-                break
-
-        # Find quantize binary
-        binary_names = ["llama-quantize", "llama-quantize.exe", "quantize", "quantize.exe"]
-
-        # Check PATH first
-        for name in binary_names:
-            path = shutil.which(name)
-            if path:
-                self.quantize_binary = Path(path)
-                self.log(f"[OK] Found quantize binary in PATH: {path}\n")
-                return
-
-        # Check build directories
-        for base in search_paths:
-            if not base.exists():
-                continue
-
-            # Common build locations
-            build_dirs = [
-                base / "build" / "bin",
-                base / "build",
-                base / "build" / "Release",
-                base / "build" / "Debug",
-                base / "bin",
-            ]
-
-            for build_dir in build_dirs:
-                if not build_dir.exists():
+        # Last resort: recursive scan on Windows (os.walk, 10 s cap)
+        if sys.platform == "win32":
+            import string
+            import time as _time
+            deadline = _time.monotonic() + 10
+            script_set = set(script_names)
+            for d in string.ascii_uppercase:
+                drive = f"{d}:\\"
+                if not os.path.isdir(drive):
                     continue
-                for name in binary_names:
-                    binary = build_dir / name
-                    if binary.exists() and binary.is_file():
-                        self.quantize_binary = binary
-                        self.log(f"[OK] Found quantize binary: {binary}\n")
-                        return
+                try:
+                    for dirpath, _dirs, files in os.walk(drive):
+                        if _time.monotonic() > deadline:
+                            return None
+                        for fname in files:
+                            if fname in script_set:
+                                return Path(os.path.join(dirpath, fname))
+                except (PermissionError, OSError):
+                    continue
 
-    def is_available(self) -> bool:
-        """Check if llama.cpp tools are available"""
-        return self.convert_script is not None or self.quantize_binary is not None
+        return None
 
-    def convert_to_f16(self, model_path: Path, output_file: Path) -> Tuple[bool, str]:
-        """Convert using llama.cpp python script"""
-        if not self.convert_script:
-            return False, "convert script not found"
+    def quantize_gguf(self, input_gguf: Path, output_path: Path,
+                      quant_type: str, gguf_config: GGUFExportConfig,
+                      model_name: str) -> Tuple[bool, str, Optional[Path]]:
+        """
+        Quantize a GGUF file using llama-quantize.
+        """
+        # Generate output filename from pattern
+        output_filename = gguf_config.output_filename_pattern.format(
+            model_name=model_name,
+            quant_type=quant_type.lower(),
+        )
+        if not output_filename.endswith(".gguf"):
+            output_filename += ".gguf"
 
-        self.log(f"Converting with llama.cpp script: {self.convert_script.name}\n")
+        output_file = output_path / output_filename
+
+        self.log(f"Quantizing to {quant_type}: {output_file.name}...\n")
+
+        # ── resolve quantize binary ─────────────────────────────────────────
+        # Script extensions that are NOT native executables.  If the resolved
+        # path is one of these the user (or a saved config) has the wrong file
+        # in the field — reject immediately rather than letting subprocess
+        # fail with WinError 193 / PermissionError.
+        _SCRIPT_EXTS = {".py", ".sh", ".bat", ".cmd", ".ps1"}
+
+        def _is_real_binary(p: str) -> bool:
+            """True when *p* points to an existing file that is not a script."""
+            path = Path(p)
+            return path.is_file() and path.suffix.lower() not in _SCRIPT_EXTS
+
+        quantize_bin = gguf_config.llama_quantize_path or self.quantize_path
+
+        # Reject anything that is missing OR is a script file
+        if not quantize_bin or not _is_real_binary(quantize_bin):
+            if quantize_bin and Path(quantize_bin).exists():
+                # File exists but it's a script — user probably has the convert
+                # script path in the field by mistake.
+                self.log(
+                    f"  [!] '{quantize_bin}' is a script, not the quantize binary – rescanning…\n"
+                )
+            else:
+                self.log(f"  [!] Cached path invalid or empty ('{quantize_bin}') – rescanning…\n")
+
+            # Use the background-cached result (already scanned at startup).
+            quantize_bin = _get_cached_quantize()
+
+            # Double-check the cached result is also a real binary
+            if not quantize_bin or not _is_real_binary(quantize_bin):
+                return False, (
+                    "llama-quantize binary not found.\n"
+                    "  1) Make sure llama.cpp is built (run cmake --build build)\n"
+                    "  2) Or use the Browse button next to 'llama-quantize Path'\n"
+                    "     to point directly at the binary (llama-quantize.exe)."
+                ), None
+
+            # Cache the freshly-found path so subsequent quants skip the scan
+            self.quantize_path = quantize_bin
+            self.log(f"  [OK] Found llama-quantize at: {quantize_bin}\n")
 
         try:
-            cmd = [
-                sys.executable,
-                str(self.convert_script),
-                str(model_path),
-                "--outfile", str(output_file),
-                "--outtype", "f16",
+            cmd = [quantize_bin, str(input_gguf), str(output_file), quant_type]
+
+            # Add importance matrix if specified
+            if gguf_config.imatrix_path and Path(gguf_config.imatrix_path).exists():
+                cmd.extend(["--imatrix", gguf_config.imatrix_path])
+                self.log(f"  Using importance matrix: {gguf_config.imatrix_path}\n")
+
+            # Add custom flags
+            if gguf_config.custom_flags:
+                custom_args = gguf_config.custom_flags.split()
+                cmd.extend(custom_args)
+                self.log(f"  Custom flags: {gguf_config.custom_flags}\n")
+
+            self.log(f"  Running: {' '.join(cmd)}\n")
+
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+
+            if result.returncode == 0 and output_file.exists():
+                file_size = output_file.stat().st_size / (1024 ** 3)
+                self.log(f"  ✓ {quant_type} complete: {output_file.name} ({file_size:.2f} GB)\n")
+                return True, "OK", output_file
+            else:
+                error_msg = result.stderr or result.stdout or "Unknown quantization error"
+                self.log(f"  ✗ {quant_type} failed: {error_msg}\n")
+                return False, error_msg, None
+
+        except subprocess.TimeoutExpired:
+            return False, "Quantization timed out (>1 hour)", None
+        except Exception as e:
+            return False, str(e), None
+
+    def export_lora_only_gguf(self, adapter_path: Path, output_path: Path,
+                              gguf_config: GGUFExportConfig) -> Tuple[bool, str, Optional[Path]]:
+        """
+        Export LoRA adapter only as GGUF (without merging with base model).
+        This creates a smaller file that can be applied at runtime.
+        """
+        self.log("Exporting LoRA adapter as standalone GGUF...\n")
+
+        lora_output = output_path / "lora-adapter.gguf"
+
+        try:
+            # Look for export-lora-to-gguf.py or similar
+            script_names = [
+                "export-lora-to-gguf.py",
+                "convert-lora-to-gguf.py",
+                "lora_to_gguf.py",
             ]
 
-            self.log(f"Running: {' '.join(cmd)}\n")
+            script_path = None
+            for base in [Path.home() / "llama.cpp", Path.cwd() / "llama.cpp"]:
+                for name in script_names:
+                    candidate = base / name
+                    if candidate.exists():
+                        script_path = candidate
+                        break
+                if script_path:
+                    break
 
-            result = safe_subprocess_run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=1800,
-                cwd=self.convert_script.parent  # Run in llama.cpp directory
-            )
+            if script_path:
+                cmd = [
+                    sys.executable, str(script_path),
+                    str(adapter_path),
+                    "--outfile", str(lora_output),
+                ]
 
-            if result.returncode == 0 and output_file.exists():
-                size_mb = output_file.stat().st_size / (1024 * 1024)
-                self.log(f"✓ Conversion successful: {size_mb:.1f} MB\n")
-                return True, "OK"
-            else:
-                error = result.stderr if result.stderr else result.stdout
-                self.log(f"✗ Conversion failed:\n{error}\n")
-                return False, error or "Unknown error"
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
 
-        except subprocess.TimeoutExpired:
-            return False, "Conversion timed out (30 min limit)"
-        except Exception as e:
-            return False, f"Exception: {str(e)}"
+                if result.returncode == 0 and lora_output.exists():
+                    self.log(f"LoRA GGUF exported: {lora_output}\n")
+                    return True, "OK", lora_output
 
-    def quantize(self, input_gguf: Path, output_file: Path, quant_type: str,
-                 imatrix_path: Optional[str] = None) -> Tuple[bool, str]:
-        """Quantize using llama-quantize binary"""
-        if not self.quantize_binary:
-            return False, "quantize binary not found"
+            # Fallback: try using llama-export-lora if available
+            export_bin = shutil.which("llama-export-lora")
+            if export_bin:
+                cmd = [export_bin, "-m", str(adapter_path), "-o", str(lora_output)]
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
 
-        self.log(f"Quantizing to {quant_type}...\n")
+                if result.returncode == 0 and lora_output.exists():
+                    return True, "OK", lora_output
 
-        try:
-            cmd = [str(self.quantize_binary), str(input_gguf), str(output_file), quant_type]
-
-            if imatrix_path and Path(imatrix_path).exists():
-                cmd.extend(["--imatrix", imatrix_path])
-                self.log(f"  Using importance matrix: {imatrix_path}\n")
-
-            self.log(f"Running: {' '.join(cmd)}\n")
-
-            result = safe_subprocess_run(cmd, capture_output=True, text=True, timeout=3600)
-
-            if result.returncode == 0 and output_file.exists():
-                size_mb = output_file.stat().st_size / (1024 * 1024)
-                self.log(f"✓ Quantization successful: {size_mb:.1f} MB\n")
-                return True, "OK"
-            else:
-                error = result.stderr if result.stderr else result.stdout
-                self.log(f"✗ Quantization failed:\n{error}\n")
-                return False, error or "Unknown error"
-
-        except subprocess.TimeoutExpired:
-            return False, "Quantization timed out (1 hour limit)"
-        except Exception as e:
-            return False, f"Exception: {str(e)}"
-
-
-class UnslothBackend(GGUFConversionBackend):
-    """Unsloth library backend"""
-
-    def is_available(self) -> bool:
-        try:
-            from unsloth import FastLanguageModel
-            return True
-        except ImportError:
-            return False
-
-    def convert_to_f16(self, model_path: Path, output_file: Path) -> Tuple[bool, str]:
-        """Convert using Unsloth's built-in GGUF export"""
-        self.log("Converting with Unsloth...\n")
-
-        try:
-            from unsloth import FastLanguageModel
-
-            # Load model
-            model, tokenizer = FastLanguageModel.from_pretrained(
-                model_name=str(model_path),
-                max_seq_length=2048,
-                load_in_4bit=False,
-            )
-
-            # Export to GGUF
-            output_dir = output_file.parent
-            model.save_pretrained_gguf(
-                str(output_dir),
-                tokenizer,
-                quantization_method="f16",
-            )
-
-            # Find the generated file
-            gguf_files = list(output_dir.glob("*.gguf"))
-            if gguf_files:
-                # Rename to our desired output name
-                gguf_files[0].rename(output_file)
-                size_mb = output_file.stat().st_size / (1024 * 1024)
-                self.log(f"✓ Unsloth conversion successful: {size_mb:.1f} MB\n")
-                return True, "OK"
-            else:
-                return False, "No GGUF file generated"
+            return False, "LoRA-only GGUF export not available. Install llama.cpp with export-lora support.", None
 
         except Exception as e:
-            self.log(f"✗ Unsloth conversion failed: {str(e)}\n")
-            return False, str(e)
-
-    def quantize(self, input_gguf: Path, output_file: Path, quant_type: str,
-                 imatrix_path: Optional[str] = None) -> Tuple[bool, str]:
-        """Unsloth can also quantize directly"""
-        self.log("Quantizing with Unsloth...\n")
-
-        try:
-            from unsloth import FastLanguageModel
-
-            # Unsloth can save directly to quantized GGUF
-            # Load the model from the original HF path (we need the model_path)
-            # This is a limitation - need the original model
-            return False, "Unsloth quantization requires original model (not supported in this flow)"
-
-        except Exception as e:
-            return False, str(e)
-
-
-class LlamaCppPythonBackend(GGUFConversionBackend):
-    """llama-cpp-python package backend"""
-
-    def is_available(self) -> bool:
-        try:
-            import llama_cpp
-            return True
-        except ImportError:
-            return False
-
-    def convert_to_f16(self, model_path: Path, output_file: Path) -> Tuple[bool, str]:
-        """Convert using llama-cpp-python if it has conversion support"""
-        try:
-            import llama_cpp
-
-            # Check if llama-cpp-python has conversion utilities
-            if hasattr(llama_cpp, 'convert_hf_to_gguf'):
-                self.log("Converting with llama-cpp-python...\n")
-                llama_cpp.convert_hf_to_gguf(
-                    str(model_path),
-                    str(output_file),
-                    ftype="f16"
-                )
-
-                if output_file.exists():
-                    size_mb = output_file.stat().st_size / (1024 * 1024)
-                    self.log(f"✓ Conversion successful: {size_mb:.1f} MB\n")
-                    return True, "OK"
-                else:
-                    return False, "No output file generated"
-            else:
-                return False, "llama-cpp-python doesn't support conversion"
-
-        except Exception as e:
-            return False, str(e)
-
-    def quantize(self, input_gguf: Path, output_file: Path, quant_type: str,
-                 imatrix_path: Optional[str] = None) -> Tuple[bool, str]:
-        """Quantize using llama-cpp-python if supported"""
-        try:
-            import llama_cpp
-
-            # Load and quantize
-            if hasattr(llama_cpp, 'quantize_gguf'):
-                self.log(f"Quantizing to {quant_type} with llama-cpp-python...\n")
-                llama_cpp.quantize_gguf(
-                    str(input_gguf),
-                    str(output_file),
-                    qtype=quant_type,
-                    imatrix=imatrix_path if imatrix_path else None
-                )
-
-                if output_file.exists():
-                    size_mb = output_file.stat().st_size / (1024 * 1024)
-                    self.log(f"✓ Quantization successful: {size_mb:.1f} MB\n")
-                    return True, "OK"
-                else:
-                    return False, "No output file generated"
-            else:
-                return False, "llama-cpp-python doesn't support quantization"
-
-        except Exception as e:
-            return False, str(e)
-
-
-# ────────────────────────────────────────────────────────────────────────────
-# MAIN GGUF EXPORT MANAGER - Orchestrates backends
-# ────────────────────────────────────────────────────────────────────────────
-
-@dataclass
-class GGUFExportConfig:
-    """Configuration for GGUF export"""
-    use_advanced_export: bool = False
-    quant_type: str = "Q4_K_M"
-    preset: str = "Standard Quality (Q4_K_M)"
-    export_all_quants: bool = False
-    selected_quants: List[str] = field(default_factory=lambda: ["Q4_K_M"])
-    imatrix_path: str = ""
-    custom_flags: str = ""
-    output_filename_pattern: str = "{model_name}-{quant_type}"
-    skip_merge_lora_only: bool = False
-    llama_quantize_path: str = ""
-    auto_import_ollama: bool = True
-    keep_f16_base: bool = False
-
-    def get_effective_quants(self) -> List[str]:
-        """Get the list of quantization types to export"""
-        # Predefined presets
-        GGUF_PRESETS = {
-            "Standard Quality (Q4_K_M)": ["Q4_K_M"],
-            "High Quality (Q5_K_M)": ["Q5_K_M"],
-            "Best Quality (Q6_K)": ["Q6_K"],
-            "Maximum Quality (Q8_0)": ["Q8_0"],
-            "Full Precision (F16)": ["F16"],
-            "Small Size (Q3_K_M)": ["Q3_K_M"],
-            "Tiny Size (Q2_K)": ["Q2_K"],
-            "IQ Optimized (IQ4_XS)": ["IQ4_XS"],
-            "All K-Quants": ["Q2_K", "Q3_K_M", "Q4_K_M", "Q5_K_M", "Q6_K", "Q8_0"],
-            "All Common": ["Q4_0", "Q4_K_M", "Q5_K_M", "Q6_K", "Q8_0", "F16"],
-            "Size Ladder (Q2→Q8)": ["Q2_K", "Q3_K_M", "Q4_K_M", "Q5_K_M", "Q6_K", "Q8_0"],
-            "IQ Series": ["IQ2_M", "IQ3_M", "IQ4_XS", "IQ4_NL"],
-        }
-
-        if self.export_all_quants:
-            return ["Q2_K", "Q3_K_M", "Q4_K_M", "Q5_K_M", "Q6_K", "Q8_0"]
-        elif self.preset in GGUF_PRESETS:
-            return GGUF_PRESETS[self.preset]
-        else:
-            return self.selected_quants if self.selected_quants else [self.quant_type]
-
-
-class ImprovedGGUFExportManager:
-    """
-    Improved GGUF Export Manager with multiple backend support
-    Automatically falls back through available methods
-    """
-
-    def __init__(self, log_callback):
-        self.log = log_callback
-        self.backends = []
-        self._init_backends()
-
-    def _init_backends(self):
-        """Initialize all available backends in priority order"""
-        self.log("Initializing GGUF conversion backends...\n")
-
-        # Priority order: llama.cpp > Unsloth > llama-cpp-python
-        backends_to_try = [
-            ("llama.cpp", LlamaCppBackend),
-            ("Unsloth", UnslothBackend),
-            ("llama-cpp-python", LlamaCppPythonBackend),
-        ]
-
-        for name, backend_class in backends_to_try:
-            try:
-                backend = backend_class(self.log)
-                if backend.is_available():
-                    self.backends.append(backend)
-                    self.log(f"  ✓ {name} backend available\n")
-                else:
-                    self.log(f"  ✗ {name} backend not available\n")
-            except MemoryError:
-                self.log(f"  ✗ {name} backend: Out of memory\n")
-            except OSError as e:
-                self.log(f"  ✗ {name} backend: OS error - {e}\n")
-            except Exception as e:
-                self.log(f"  ✗ {name} backend error: {e}\n")
-                import traceback
-                self.log(f"     {traceback.format_exc()[:200]}\n")
-
-        if not self.backends:
-            self.log("\n[WARNING] No GGUF backends available!\n")
-            self.log("Install one of:\n")
-            self.log("  - llama.cpp: git clone + build\n")
-            self.log("  - pip install unsloth\n")
-            self.log("  - pip install llama-cpp-python\n")
-        else:
-            self.log(f"\n{len(self.backends)} backend(s) ready\n")
-
-    def convert_to_f16(self, model_path: Path, output_file: Path) -> Tuple[bool, str, Optional[Path]]:
-        """
-        Convert HF model to F16 GGUF, trying all available backends
-        """
-        self.log(f"\nConverting {model_path.name} to F16 GGUF...\n")
-
-        if not self.backends:
-            return False, "No conversion backends available", None
-
-        # Try each backend until one succeeds
-        for backend in self.backends:
-            self.log(f"Trying {backend.__class__.__name__}...\n")
-            try:
-                success, error = backend.convert_to_f16(model_path, output_file)
-                if success:
-                    return True, "OK", output_file
-                else:
-                    self.log(f"  Failed: {error}\n")
-            except Exception as e:
-                self.log(f"  Exception: {str(e)}\n")
-
-        return False, "All conversion methods failed", None
-
-    def quantize(self, input_gguf: Path, output_file: Path, quant_type: str,
-                 imatrix_path: Optional[str] = None) -> Tuple[bool, str, Optional[Path]]:
-        """
-        Quantize F16 GGUF, trying available backends
-        """
-        self.log(f"\nQuantizing to {quant_type}...\n")
-
-        if not self.backends:
-            return False, "No quantization backends available", None
-
-        # Try each backend
-        for backend in self.backends:
-            try:
-                success, error = backend.quantize(input_gguf, output_file, quant_type, imatrix_path)
-                if success:
-                    return True, "OK", output_file
-                else:
-                    self.log(f"  {backend.__class__.__name__} failed: {error}\n")
-            except Exception as e:
-                self.log(f"  {backend.__class__.__name__} exception: {str(e)}\n")
-
-        return False, "All quantization methods failed", None
+            return False, str(e), None
 
     def run_full_export(self, model_path: Path, output_path: Path,
                         gguf_config: GGUFExportConfig, model_name: str) -> Dict[str, Any]:
         """
-        Run complete GGUF export with all configured options
+        Run the complete GGUF export process with all configured options.
+        Returns a dict with results for each quantization type.
         """
         results = {
             "success": False,
             "f16_path": None,
             "quantized_files": {},
             "errors": [],
+            "lora_only_path": None,
         }
 
         output_path.mkdir(parents=True, exist_ok=True)
 
-        self.log("=" * 70 + "\n")
-        self.log("GGUF EXPORT STARTING\n")
-        self.log("=" * 70 + "\n")
-        self.log(f"Model: {model_path}\n")
-        self.log(f"Output: {output_path}\n\n")
+        self.log("=" * 60 + "\n")
+        self.log("ADVANCED GGUF EXPORT\n")
+        self.log("=" * 60 + "\n")
 
-        # Step 1: Convert to F16
-        f16_file = output_path / f"{model_name}-f16.gguf"
-        success, error, f16_path = self.convert_to_f16(model_path, f16_file)
+        # Handle LoRA-only export if requested
+        if gguf_config.skip_merge_lora_only:
+            self.log("LoRA-only export mode selected\n")
+            success, error, lora_path = self.export_lora_only_gguf(
+                model_path, output_path, gguf_config
+            )
+            if success:
+                results["lora_only_path"] = lora_path
+                results["success"] = True
+            else:
+                results["errors"].append(f"LoRA export: {error}")
+            return results
+
+        # Convert to F16 GGUF first
+        success, error, f16_path = self.convert_to_gguf_f16(
+            model_path, output_path, gguf_config
+        )
 
         if not success:
             results["errors"].append(f"F16 conversion: {error}")
-            self.log("\n" + "=" * 70 + "\n")
-            self.log("EXPORT FAILED\n")
-            self.log("=" * 70 + "\n")
             return results
 
         results["f16_path"] = f16_path
-        self.log("\n✓ F16 base file ready\n\n")
 
-        # Step 2: Quantize to requested types
+        # Get list of quants to export
         quant_list = gguf_config.get_effective_quants()
-        self.log(f"Quantization targets: {', '.join(quant_list)}\n\n")
+        self.log(f"\nQuantization targets: {', '.join(quant_list)}\n\n")
 
+        # Run quantization for each type
         for quant_type in quant_list:
             if quant_type.upper() in ["F16", "FP16"]:
-                # F16 already exists
+                # F16 already done
                 results["quantized_files"]["F16"] = f16_path
                 continue
 
-            # Generate output filename
-            output_filename = gguf_config.output_filename_pattern.format(
-                model_name=model_name,
-                quant_type=quant_type.lower()
-            )
-            if not output_filename.endswith(".gguf"):
-                output_filename += ".gguf"
-
-            quant_file = output_path / output_filename
-
-            success, error, quant_path = self.quantize(
-                f16_path, quant_file, quant_type.upper(),
-                gguf_config.imatrix_path if gguf_config.imatrix_path else None
+            success, error, quant_path = self.quantize_gguf(
+                f16_path, output_path, quant_type.upper(),
+                gguf_config, model_name
             )
 
             if success:
                 results["quantized_files"][quant_type] = quant_path
-
-                # Auto-import to Ollama if requested
-                if gguf_config.auto_import_ollama:
-                    ollama_name = f"{model_name}-{quant_type.lower()}"
-                    self.import_to_ollama(quant_path, ollama_name)
             else:
                 results["errors"].append(f"{quant_type}: {error}")
 
-        # Clean up F16 if not keeping it
+        # Clean up F16 base if not keeping it
         if not gguf_config.keep_f16_base and f16_path and f16_path.exists():
-            if "F16" not in quant_list:
+            if "F16" not in quant_list and "f16" not in [q.lower() for q in quant_list]:
                 try:
                     f16_path.unlink()
-                    self.log("\nCleaned up intermediate F16 file\n")
-                except Exception as e:
-                    self.log(f"Warning: Could not delete F16 file: {e}\n")
+                    self.log("Cleaned up intermediate F16 file\n")
+                except:
+                    pass
 
         results["success"] = len(results["quantized_files"]) > 0
 
         # Summary
-        self.log("\n" + "=" * 70 + "\n")
+        self.log("\n" + "=" * 60 + "\n")
         self.log("EXPORT SUMMARY\n")
-        self.log("=" * 70 + "\n")
-        self.log(f"Successful: {len(results['quantized_files'])}/{len(quant_list)}\n\n")
-
+        self.log("=" * 60 + "\n")
+        self.log(f"Successful exports: {len(results['quantized_files'])}\n")
         for qtype, path in results["quantized_files"].items():
             if path and path.exists():
                 size_gb = path.stat().st_size / (1024 ** 3)
-                self.log(f"  ✓ {qtype:8s} {path.name:40s} ({size_gb:.2f} GB)\n")
+                self.log(f"  ✓ {qtype}: {path.name} ({size_gb:.2f} GB)\n")
 
         if results["errors"]:
-            self.log(f"\nErrors: {len(results['errors'])}\n")
+            self.log(f"Errors: {len(results['errors'])}\n")
             for error in results["errors"]:
                 self.log(f"  ✗ {error}\n")
 
-        self.log("=" * 70 + "\n")
-
         return results
 
-    def import_to_ollama(self, gguf_path: Path, model_name: str) -> Tuple[bool, str]:
-        """Import GGUF file to Ollama"""
-        self.log(f"  Importing to Ollama as '{model_name}'...\n")
+    def import_to_ollama(self, gguf_path: Path, model_name: str, base_model_name: str = None) -> Tuple[bool, str]:
+        """Import a GGUF file into Ollama with proper chat template"""
+        self.log(f"Importing to Ollama as '{model_name}'...\n")
 
         try:
-            # Create Modelfile
-            modelfile_content = f"""FROM {gguf_path.absolute()}
+            # Detect chat template based on base model
+            chat_template = self._detect_chat_template(base_model_name or model_name)
+            
+            # Create Modelfile with proper template
+            modelfile_content = f"""FROM {gguf_path}
+
+# Chat Template
+TEMPLATE \"""{{{{ if .System }}}}{{{{ .System }}}}{{{{ end }}}}{{{{ if .Prompt }}}}{chat_template['user_prefix']}{{{{ .Prompt }}}}{chat_template['user_suffix']}{{{{ end }}}}{chat_template['assistant_prefix']}{{{{ .Response }}}}{chat_template['assistant_suffix']}\"""
+
+# Parameters
 PARAMETER temperature 0.7
 PARAMETER top_p 0.9
+PARAMETER stop "{chat_template['stop_token']}"
+
+# System message
+SYSTEM \"""You are a helpful AI assistant.\"""
 """
-            modelfile_path = gguf_path.parent / f"Modelfile.{model_name}"
-            with open(modelfile_path, 'w') as f:
+            
+            modelfile_path = gguf_path.parent / "Modelfile"
+            with open(modelfile_path, 'w', encoding='utf-8') as f:
                 f.write(modelfile_content)
+            
+            self.log(f"Created Modelfile with {chat_template['name']} template\n")
 
             # Run ollama create
             cmd = ["ollama", "create", model_name, "-f", str(modelfile_path)]
-            result = safe_subprocess_run(cmd, capture_output=True, text=True, timeout=300)
-
-            # Clean up Modelfile
-            try:
-                modelfile_path.unlink()
-            except:
-                pass
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
 
             if result.returncode == 0:
-                self.log(f"    ✓ Imported to Ollama\n")
+                self.log(f"✓ Imported to Ollama as '{model_name}'\n")
+                self.log(f"  Template: {chat_template['name']}\n")
                 return True, "OK"
             else:
                 error = result.stderr or result.stdout or "Unknown error"
-                self.log(f"    ✗ Ollama import failed: {error}\n")
+                self.log(f"Ollama import failed: {error}\n")
                 return False, error
 
         except Exception as e:
+            self.log(f"Import error: {str(e)}\n")
             return False, str(e)
 
+    def _detect_chat_template(self, model_name: str) -> Dict[str, str]:
+        """Detect appropriate chat template for the model"""
+        model_lower = model_name.lower()
+        
+        # ChatML format (default and most compatible)
+        if any(x in model_lower for x in ['mistral', 'mixtral', 'phi', 'qwen', 'yi']):
+            return {
+                'name': 'ChatML',
+                'user_prefix': '<|im_start|>user\\n',
+                'user_suffix': '<|im_end|>\\n',
+                'assistant_prefix': '<|im_start|>assistant\\n',
+                'assistant_suffix': '<|im_end|>\\n',
+                'stop_token': '<|im_end|>'
+            }
+        
+        # Llama3 format
+        elif any(x in model_lower for x in ['llama-3', 'llama3']):
+            return {
+                'name': 'Llama3',
+                'user_prefix': '<|start_header_id|>user<|end_header_id|>\\n\\n',
+                'user_suffix': '<|eot_id|>',
+                'assistant_prefix': '<|start_header_id|>assistant<|end_header_id|>\\n\\n',
+                'assistant_suffix': '<|eot_id|>',
+                'stop_token': '<|eot_id|>'
+            }
+        
+        # Llama2 format
+        elif any(x in model_lower for x in ['llama-2', 'llama2']):
+            return {
+                'name': 'Llama2',
+                'user_prefix': '[INST] ',
+                'user_suffix': ' [/INST]',
+                'assistant_prefix': ' ',
+                'assistant_suffix': ' </s>',
+                'stop_token': '</s>'
+            }
+        
+        # Alpaca format
+        elif 'alpaca' in model_lower:
+            return {
+                'name': 'Alpaca',
+                'user_prefix': '### Instruction:\\n',
+                'user_suffix': '\\n\\n',
+                'assistant_prefix': '### Response:\\n',
+                'assistant_suffix': '\\n\\n',
+                'stop_token': '###'
+            }
+        
+        # Vicuna format  
+        elif 'vicuna' in model_lower:
+            return {
+                'name': 'Vicuna',
+                'user_prefix': 'USER: ',
+                'user_suffix': '\\n',
+                'assistant_prefix': 'ASSISTANT: ',
+                'assistant_suffix': '\\n',
+                'stop_token': 'USER:'
+            }
+        
+        # Gemma format
+        elif 'gemma' in model_lower:
+            return {
+                'name': 'Gemma',
+                'user_prefix': '<start_of_turn>user\\n',
+                'user_suffix': '<end_of_turn>\\n',
+                'assistant_prefix': '<start_of_turn>model\\n',
+                'assistant_suffix': '<end_of_turn>\\n',
+                'stop_token': '<end_of_turn>'
+            }
+        
+        # Default to ChatML (most widely supported)
+        else:
+            self.log(f"  Using default ChatML template for: {model_name}\n")
+            return {
+                'name': 'ChatML (default)',
+                'user_prefix': '<|im_start|>user\\n',
+                'user_suffix': '<|im_end|>\\n',
+                'assistant_prefix': '<|im_start|>assistant\\n',
+                'assistant_suffix': '<|im_end|>\\n',
+                'stop_token': '<|im_end|>'
+            }
 
+
+# ════════════════════════════════════════════════════════════════════════════
+# End: GGUF EXPORT MANAGER
 # ════════════════════════════════════════════════════════════════════════════
 # ═══════════════════════════════════════════════════════════════════════
 # TRAINING MANAGER
@@ -1782,21 +1589,10 @@ class TrainingManager:
         self.total_steps = 0
         self.last_loss = None
         # ────────────────────────────────────────────────────────────────
-        # Added: GGUF export manager instance (2026) - lazy initialized
+        # Added: GGUF export manager instance (2026)
         # ────────────────────────────────────────────────────────────────
-        self._gguf_manager = None  # Initialized on first use via property
+        self.gguf_manager = GGUFExportManager(log_callback)
         # ────────────────────────────────────────────────────────────────
-
-    @property
-    def gguf_manager(self):
-        """Lazy-loaded GGUF manager"""
-        if self._gguf_manager is None:
-            self._gguf_manager = ImprovedGGUFExportManager(self.log)
-        return self._gguf_manager
-
-    @gguf_manager.setter
-    def gguf_manager(self, value):
-        self._gguf_manager = value
 
     def prepare_dataset(self, config: TrainingConfig) -> Tuple[Optional[Any], str]:
         """Prepare dataset for training with chat-template auto-detection and auto-wrapping."""
@@ -2227,7 +2023,7 @@ class TrainingManager:
                     import_path = list(results["quantized_files"].values())[0]
 
                 if import_path:
-                    self.gguf_manager.import_to_ollama(import_path, config.output_name)
+                    self.gguf_manager.import_to_ollama(import_path, config.output_name, config.base_model)
         else:
             # Use default/legacy GGUF export behavior
             self._run_default_gguf_export(config, model_path)
@@ -2264,7 +2060,7 @@ class TrainingManager:
                 # Auto-import to Ollama
                 gguf_files = list(gguf_path.glob("*.gguf"))
                 if gguf_files:
-                    self.gguf_manager.import_to_ollama(gguf_files[0], config.output_name)
+                    self.gguf_manager.import_to_ollama(gguf_files[0], config.output_name, config.base_model)
 
             else:
                 self.log("Unsloth not available - skipping default GGUF export\n")
@@ -2624,23 +2420,31 @@ class NTTunerGUI:
         if not dpg.does_item_exist("template_indicator"):
             return
 
+        # If model name is empty, show the prompt
+        if not model_name or model_name.strip() == "":
+            dpg.set_value("template_indicator",
+                          "? Enter or select a model to detect its chat template")
+            dpg.configure_item("template_indicator", color=[255, 200, 80])
+            dpg.show_item("template_indicator")
+            return
+
         # Ollama colon names cannot be loaded by transformers
         if ":" in model_name and "/" not in model_name:
             dpg.set_value("template_indicator",
                           f"⚠ '{model_name}' is an Ollama name — use Download first, then pick the HuggingFace equivalent")
             dpg.configure_item("template_indicator", color=[255, 180, 80])
+            dpg.show_item("template_indicator")
             return
 
         info = detect_template_for_model(model_name)
         if info:
-            display, markers, _ = info
-            dpg.set_value("template_indicator",
-                          f"✓ Detected template: {display}   (markers: {', '.join(markers)})")
-            dpg.configure_item("template_indicator", color=[100, 220, 100])
+            # Valid model detected - hide the indicator
+            dpg.hide_item("template_indicator")
         else:
             dpg.set_value("template_indicator",
                           "? No known template — dataset must already be formatted correctly")
             dpg.configure_item("template_indicator", color=[255, 200, 80])
+            dpg.show_item("template_indicator")
 
     def refresh_models(self):
         self.append_log("Refreshing models...\n")
@@ -2658,7 +2462,7 @@ class NTTunerGUI:
 
         def download():
             try:
-                result = safe_subprocess_run(["ollama", "pull", model], capture_output=True, text=True, timeout=300)
+                result = subprocess.run(["ollama", "pull", model], capture_output=True, text=True, timeout=300)
                 if result.returncode == 0:
                     self.append_log(f"[OK] {model} downloaded\n")
                 else:
@@ -2837,7 +2641,7 @@ class NTTunerGUI:
                 # Import first successful quant
                 if results["quantized_files"]:
                     first_quant = list(results["quantized_files"].values())[0]
-                    gguf_manager.import_to_ollama(first_quant, self.config.output_name)
+                    gguf_manager.import_to_ollama(first_quant, self.config.output_name, self.config.base_model)
 
         threading.Thread(target=export_thread, daemon=True).start()
 
@@ -2846,10 +2650,6 @@ class NTTunerGUI:
     # ────────────────────────────────────────────────────────────────────────
 
     def create_gui(self):
-        """Create GUI"""
-        if not _init_dpg():
-            print("Cannot create GUI - DearPyGui failed to load")
-            return False
         """Create GUI"""
         dpg.create_context()
 
@@ -2904,7 +2704,6 @@ class NTTunerGUI:
         with dpg.window(tag="main", label="NTTuner - Fine-Tuning for NTCompanion Datasets"):
             with dpg.group(horizontal=True):
                 dpg.add_text("NTTuner Professional", color=[0, 180, 255])
-                dpg.add_text("| Optimized for NTCompanion", color=[120, 220, 140])
 
             dpg.add_spacer(height=5)
 
@@ -3105,22 +2904,18 @@ class NTTunerGUI:
         self.create_gui()
 
         self.append_log("=" * 70 + "\n")
-        self.append_log("NTTuner Professional - Optimized for NTCompanion\n")
+        self.append_log("NTTuner\n")
         self.append_log("=" * 70 + "\n")
         self.append_log("GPU DETECTION:\n")
 
         for detail in GPU_INFO["details"]:
             self.append_log(f"  {detail}\n")
 
-        self.append_log("\nFEATURES:\n")
-        self.append_log("  ✓ NTCompanion JSONL format support\n")
-        self.append_log("  ✓ Enhanced GPU detection (CUDA/ROCm/MPS)\n")
-        self.append_log("  ✓ Dataset validation and statistics\n")
-        self.append_log("  ✓ VRAM usage estimation\n")
-        self.append_log("  ✓ Progress tracking with ETA\n")
-        self.append_log("  ✓ Auto-configuration\n")
-        self.append_log("  ✓ Advanced GGUF export options\n")
-        self.append_log("=" * 70 + "\n\n")
+        if GPU_INFO["warnings"]:
+            self.append_log("\nWARNINGS:\n")
+            for warning in GPU_INFO["warnings"]:
+                self.append_log(f"  ! {warning}\n")
+
 
         if not DEPS_AVAILABLE:
             self.append_log("[!] Missing dependencies\n")
