@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-NTTuner Professional - Enhanced Multi-Backend GPU Support
-Original: github.com/noosed/nttuner
+NTTuner - Enhanced Multi-Backend GPU Support
 Enhanced: Added Vulkan and OpenCL support for non-NVIDIA GPUs
 
 INSTALLATION INSTRUCTIONS:
