@@ -1,43 +1,4 @@
 # -*- coding: utf-8 -*-
-"""
-NTTuner - Enhanced Multi-Backend GPU Support
-Enhanced: Added Vulkan and OpenCL support for non-NVIDIA GPUs
-
-INSTALLATION INSTRUCTIONS:
-==========================
-
-For NVIDIA GPUs (CUDA):
-  pip install torch transformers datasets trl peft accelerate dearpygui
-  pip install bitsandbytes  # For 4-bit/8-bit quantization
-  pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"  # Optional speedup
-
-For AMD GPUs (ROCm):
-  pip install torch --index-url https://download.pytorch.org/whl/rocm6.0
-  pip install transformers datasets trl peft accelerate dearpygui
-
-For Intel/Other GPUs (Vulkan):
-  pip install torch transformers datasets trl peft accelerate dearpygui
-  pip install vulkan  # For GPU detection
-  pip install torch-directml  # Windows only, for DirectML acceleration
-  # Or use ONNX Runtime: pip install onnxruntime-gpu
-
-For Intel/AMD/Other (OpenCL):
-  pip install torch transformers datasets trl peft accelerate dearpygui
-  pip install pyopencl  # For GPU detection
-  pip install plaidml-keras plaidml  # For PlaidML acceleration
-  # Or use ONNX Runtime: pip install onnxruntime
-
-For Apple Silicon (MPS):
-  pip install torch transformers datasets trl peft accelerate dearpygui
-  # MPS is built into PyTorch on macOS
-
-NOTES:
-- Vulkan and OpenCL detection is provided for compatibility
-- Training on non-CUDA backends uses standard PyTorch (slower than Unsloth)
-- For best performance on Intel/AMD, consider ONNX Runtime or cloud GPUs
-- All original functionality is preserved
-"""
-
 try:
     import chronicals
     from chronicals import ChronicalsTrainer, ChronicalsConfig, SequencePacker
@@ -63,60 +24,13 @@ import shutil
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# ENHANCED GPU DETECTION - Now with Vulkan and OpenCL support
+# ENHANCED GPU DETECTION
 # ═══════════════════════════════════════════════════════════════════════
-
-def detect_vulkan_gpu():
-    """Detect Vulkan-capable GPUs for non-NVIDIA users"""
-    try:
-        import vulkan as vk
-        instance = vk.VkInstance()
-        physical_devices = vk.vkEnumeratePhysicalDevices(instance)
-
-        if physical_devices:
-            props = vk.vkGetPhysicalDeviceProperties(physical_devices[0])
-            mem_props = vk.vkGetPhysicalDeviceMemoryProperties(physical_devices[0])
-            heap_sizes = [mem_props.memoryHeaps[i].size for i in range(mem_props.memoryHeapCount)]
-
-            return {
-                "available": True,
-                "device_name": props.deviceName.decode('utf-8'),
-                "device_count": len(physical_devices),
-                "memory_gb": max(heap_sizes) / (1024 ** 3) if heap_sizes else 4.0
-            }
-    except Exception:
-        pass
-    return {"available": False}
-
-
-def detect_opencl_gpu():
-    """Detect OpenCL-capable GPUs for Intel/AMD/other non-NVIDIA users"""
-    try:
-        import pyopencl as cl
-        platforms = cl.get_platforms()
-
-        for platform in platforms:
-            devices = platform.get_devices(device_type=cl.device_type.GPU)
-            if devices:
-                device = devices[0]
-                return {
-                    "available": True,
-                    "device_name": device.name.strip(),
-                    "vendor": device.vendor.strip(),
-                    "device_count": len(devices),
-                    "memory_gb": device.global_mem_size / (1024 ** 3),
-                    "platform_version": platform.version
-                }
-    except Exception:
-        pass
-    return {"available": False}
-
 
 def detect_gpu_comprehensive():
     """
     Comprehensive GPU detection with robust error handling
-    Supports: NVIDIA CUDA, AMD ROCm, Apple Metal (MPS), Vulkan, OpenCL
-    Enhanced for non-NVIDIA GPU users
+    Supports: NVIDIA CUDA, AMD ROCm, Apple Metal (MPS)
     """
     gpu_info = {
         "has_gpu": False,
@@ -127,9 +41,7 @@ def detect_gpu_comprehensive():
         "backend": "cpu",
         "cuda_version": None,
         "details": [],
-        "warnings": [],
-        "vulkan_available": False,
-        "opencl_available": False
+        "warnings": []
     }
 
     # Try to import torch
@@ -238,73 +150,10 @@ def detect_gpu_comprehensive():
     except Exception:
         pass
 
-    # CPU Fallback - but first check for Vulkan/OpenCL support
-
-    # Try Vulkan for Intel/AMD/other GPUs
-    vulkan_info = detect_vulkan_gpu()
-    if vulkan_info["available"]:
-        gpu_info["has_gpu"] = True
-        gpu_info["gpu_type"] = "Vulkan"
-        gpu_info["backend"] = "vulkan"
-        gpu_info["gpu_name"] = vulkan_info["device_name"]
-        gpu_info["gpu_count"] = vulkan_info["device_count"]
-        gpu_info["gpu_memory"] = vulkan_info["memory_gb"]
-        gpu_info["vulkan_available"] = True
-
-        gpu_info["details"].append("Vulkan Compute API")
-        gpu_info["details"].append(f"Device: {gpu_info['gpu_name']}")
-        gpu_info["details"].append(f"VRAM: {gpu_info['gpu_memory']:.1f} GB")
-        gpu_info["warnings"].append("Vulkan backend - requires torch-directml or ONNX Runtime")
-        gpu_info["warnings"].append("For training: pip install torch-directml (Windows) or use ONNX Runtime")
-
-        return gpu_info
-
-    # Try OpenCL for Intel/AMD/other GPUs
-    opencl_info = detect_opencl_gpu()
-    if opencl_info["available"]:
-        gpu_info["has_gpu"] = True
-        gpu_info["gpu_type"] = "OpenCL"
-        gpu_info["backend"] = "opencl"
-        gpu_info["gpu_name"] = opencl_info["device_name"]
-        gpu_info["gpu_count"] = opencl_info["device_count"]
-        gpu_info["gpu_memory"] = opencl_info["memory_gb"]
-        gpu_info["opencl_available"] = True
-
-        gpu_info["details"].append(f"OpenCL {opencl_info['platform_version']}")
-        gpu_info["details"].append(f"Vendor: {opencl_info['vendor']}")
-        gpu_info["details"].append(f"Device: {gpu_info['gpu_name']}")
-        gpu_info["details"].append(f"VRAM: {gpu_info['gpu_memory']:.1f} GB")
-        gpu_info["warnings"].append("OpenCL backend - requires PlaidML or ONNX Runtime")
-        gpu_info["warnings"].append("For training: pip install plaidml-keras plaidml or use ONNX Runtime")
-
-        return gpu_info
-
-    # Check if libraries are at least installed
-    try:
-        import vulkan
-        gpu_info["vulkan_available"] = True
-        gpu_info["details"].append("Vulkan library installed (no devices detected)")
-    except ImportError:
-        pass
-
-    try:
-        import pyopencl
-        gpu_info["opencl_available"] = True
-        gpu_info["details"].append("OpenCL library installed (no devices detected)")
-    except ImportError:
-        pass
-
-    # Pure CPU mode
+    # CPU Fallback
     gpu_info["details"].append("No GPU detected - using CPU")
     gpu_info["details"].append("Training will be very slow")
-
-    # Provide installation suggestions for non-NVIDIA users
-    if not gpu_info["vulkan_available"] and not gpu_info["opencl_available"]:
-        gpu_info["warnings"].append("For non-NVIDIA GPUs:")
-        gpu_info["warnings"].append("  AMD: pip install torch --index-url https://download.pytorch.org/whl/rocm6.0")
-        gpu_info["warnings"].append("  Intel/Other: pip install vulkan pyopencl torch-directml")
-
-    gpu_info["warnings"].append("Consider cloud GPU: Google Colab, Vast.ai, RunPod")
+    gpu_info["warnings"].append("Consider using cloud GPU (Google Colab, etc.)")
 
     return gpu_info
 
@@ -465,10 +314,6 @@ def get_device_map() -> str:
         return "auto"
     elif GPU_BACKEND == "mps":
         return "mps"
-    elif GPU_BACKEND == "vulkan":
-        return "cpu"  # Vulkan requires special handling via ONNX or DirectML
-    elif GPU_BACKEND == "opencl":
-        return "cpu"  # OpenCL requires special handling via PlaidML or ONNX
     else:
         return "cpu"
 
@@ -481,8 +326,6 @@ def get_torch_dtype():
         return torch.float16
     elif GPU_BACKEND == "mps":
         return torch.float16
-    elif GPU_BACKEND in ["vulkan", "opencl"]:
-        return torch.float16  # FP16 supported on modern GPUs
     else:
         return torch.float32
 
@@ -1058,10 +901,18 @@ class DatasetHandler:
 
             if format_type == 'jsonl':
                 with open(filepath, 'r', encoding='utf-8') as f:
-                    for line in f:
+                    for line_num, line in enumerate(f, 1):
                         line = line.strip()
                         if line:
-                            data.append(json.loads(line))
+                            parsed = json.loads(line)
+                            # Debug: Check first entry for newline issues
+                            if line_num == 1 and "text" in parsed:
+                                has_real_newlines = '\n' in parsed["text"]
+                                has_escaped_newlines = '\\n' in parsed["text"]
+                                print(f"[DEBUG] First entry - Real newlines: {has_real_newlines}, Escaped \\n: {has_escaped_newlines}")
+                                if has_escaped_newlines:
+                                    print("[WARNING] Dataset contains literal \\n strings - this will cause output issues!")
+                            data.append(parsed)
 
             elif format_type == 'json':
                 with open(filepath, 'r', encoding='utf-8') as f:
@@ -1358,6 +1209,9 @@ class GGUFExportManager:
             model_name=model_name,
             quant_type=quant_type.lower(),
         )
+        # Strip any ANSI codes that might have gotten into the filename
+        output_filename = self._strip_ansi_codes(output_filename)
+        
         if not output_filename.endswith(".gguf"):
             output_filename += ".gguf"
 
@@ -1426,10 +1280,11 @@ class GGUFExportManager:
 
             if result.returncode == 0 and output_file.exists():
                 file_size = output_file.stat().st_size / (1024 ** 3)
-                self.log(f"  ✓ {quant_type} complete: {output_file.name} ({file_size:.2f} GB)\n")
+                self.log(f"  - {quant_type} complete: {output_file.name} ({file_size:.2f} GB)\n")
                 return True, "OK", output_file
             else:
-                error_msg = result.stderr or result.stdout or "Unknown quantization error"
+                # Strip ANSI codes from error messages
+                error_msg = self._strip_ansi_codes(result.stderr or result.stdout or "Unknown quantization error")
                 self.log(f"  ✗ {quant_type} failed: {error_msg}\n")
                 return False, error_msg, None
 
@@ -1499,6 +1354,9 @@ class GGUFExportManager:
         Run the complete GGUF export process with all configured options.
         Returns a dict with results for each quantization type.
         """
+        # Sanitize model name to prevent ANSI codes in filenames
+        model_name = self._strip_ansi_codes(model_name)
+        
         results = {
             "success": False,
             "f16_path": None,
@@ -1577,7 +1435,7 @@ class GGUFExportManager:
         for qtype, path in results["quantized_files"].items():
             if path and path.exists():
                 size_gb = path.stat().st_size / (1024 ** 3)
-                self.log(f"  ✓ {qtype}: {path.name} ({size_gb:.2f} GB)\n")
+                self.log(f"  - {qtype}: {path.name} ({size_gb:.2f} GB)\n")
 
         if results["errors"]:
             self.log(f"Errors: {len(results['errors'])}\n")
@@ -1586,16 +1444,97 @@ class GGUFExportManager:
 
         return results
 
+    def _strip_ansi_codes(self, text: str) -> str:
+        """Remove ANSI escape codes and control characters from text"""
+        import re
+        # Remove standard ANSI escape sequences with ESC prefix
+        text = re.sub(r'\x1b\[[0-9;?]*[a-zA-Z]', '', text)
+        text = re.sub(r'\033\[[0-9;?]*[a-zA-Z]', '', text)
+        # Remove DEC Private Mode CSI sequences: [?number with or without trailing letter
+        text = re.sub(r'\[\?[0-9]+[a-zA-Z]?', '', text, flags=re.IGNORECASE)
+        # Remove other CSI sequences
+        text = re.sub(r'\[[0-9;]+[a-zA-Z]?', '', text)
+        # Remove stray ?[ combinations
+        text = re.sub(r'\?\[', '', text)
+        # Remove lone ? that were part of escape sequences
+        text = re.sub(r'^[\?]+', '', text)  # Leading ?
+        # Remove other control characters
+        text = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', text)
+        return text
+    
+    def _sanitize_ollama_name(self, model_name: str) -> str:
+        """Sanitize model name for Ollama compatibility
+        
+        Ollama model name rules:
+        - Lowercase only
+        - Can contain: letters, numbers, hyphens, underscores, dots, colons
+        - No spaces or special characters
+        - Format: name:tag or just name
+        """
+        import re
+        
+        # First strip ANSI codes
+        name = self._strip_ansi_codes(model_name)
+        
+        # Convert to lowercase
+        name = name.lower()
+        
+        # Replace spaces and invalid characters with hyphens
+        # Ollama only allows: a-z, 0-9, . _ : -
+        name = re.sub(r'[^a-z0-9._:-]', '-', name)
+        
+        # Remove consecutive hyphens
+        name = re.sub(r'-+', '-', name)
+        
+        # Remove leading/trailing hyphens, dots, underscores
+        name = name.strip('-._')
+        
+        # Ensure it's not empty
+        if not name:
+            name = "custom-model"
+            
+        return name
+
     def import_to_ollama(self, gguf_path: Path, model_name: str, base_model_name: str = None) -> Tuple[bool, str]:
         """Import a GGUF file into Ollama with proper chat template"""
-        self.log(f"Importing to Ollama as '{model_name}'...\n")
+        # Validate the GGUF file exists
+        if not gguf_path.exists():
+            error = f"GGUF file not found: {gguf_path}"
+            self.log(f"ERROR: {error}\n")
+            return False, error
+        
+        if not gguf_path.is_file():
+            error = f"Path is not a file: {gguf_path}"
+            self.log(f"ERROR: {error}\n")
+            return False, error
+        
+        # Check file size (should be at least 1MB)
+        file_size_mb = gguf_path.stat().st_size / (1024 * 1024)
+        if file_size_mb < 1:
+            error = f"GGUF file seems too small ({file_size_mb:.2f} MB): {gguf_path}"
+            self.log(f"WARNING: {error}\n")
+        
+        # Sanitize the model name for Ollama
+        safe_model_name = self._sanitize_ollama_name(model_name)
+        
+        if safe_model_name != model_name:
+            self.log(f"Sanitized model name: '{model_name}' -> '{safe_model_name}'\n")
+        
+        self.log(f"Importing to Ollama as '{safe_model_name}'...\n")
+        self.log(f"GGUF file size: {file_size_mb:.2f} MB\n")
 
         try:
             # Detect chat template based on base model
             chat_template = self._detect_chat_template(base_model_name or model_name)
-
+            
+            # Ensure the gguf_path string is clean and uses proper path format
+            # Convert to absolute path and use forward slashes (cross-platform compatible)
+            clean_gguf_path = str(Path(gguf_path).resolve()).replace('\\', '/')
+            # Also strip any ANSI codes just in case
+            clean_gguf_path = self._strip_ansi_codes(clean_gguf_path)
+            
             # Create Modelfile with proper template
-            modelfile_content = f"""FROM {gguf_path}
+            modelfile_content = f"""FROM {clean_gguf_path}
 
 # Chat Template
 TEMPLATE \"""{{{{ if .System }}}}{{{{ .System }}}}{{{{ end }}}}{{{{ if .Prompt }}}}{chat_template['user_prefix']}{{{{ .Prompt }}}}{chat_template['user_suffix']}{{{{ end }}}}{chat_template['assistant_prefix']}{{{{ .Response }}}}{chat_template['assistant_suffix']}\"""
@@ -1608,24 +1547,33 @@ PARAMETER stop "{chat_template['stop_token']}"
 # System message
 SYSTEM \"""You are a helpful AI assistant.\"""
 """
-
+            
             modelfile_path = gguf_path.parent / "Modelfile"
             with open(modelfile_path, 'w', encoding='utf-8') as f:
                 f.write(modelfile_content)
-
+            
             self.log(f"Created Modelfile with {chat_template['name']} template\n")
+            self.log(f"GGUF path in Modelfile: {clean_gguf_path}\n")
 
             # Run ollama create
-            cmd = ["ollama", "create", model_name, "-f", str(modelfile_path)]
+            cmd = ["ollama", "create", safe_model_name, "-f", str(modelfile_path)]
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
 
             if result.returncode == 0:
-                self.log(f"✓ Imported to Ollama as '{model_name}'\n")
+                self.log(f"- Imported to Ollama as '{safe_model_name}'\n")
                 self.log(f"  Template: {chat_template['name']}\n")
                 return True, "OK"
             else:
-                error = result.stderr or result.stdout or "Unknown error"
+                # Strip ANSI codes from error output
+                error = self._strip_ansi_codes(result.stderr or result.stdout or "Unknown error")
                 self.log(f"Ollama import failed: {error}\n")
+                
+                # If it's an invalid model name error, also log what we tried to use
+                if "invalid model name" in error.lower():
+                    self.log(f"  Attempted model name: '{safe_model_name}'\n")
+                    self.log(f"  GGUF file path: '{clean_gguf_path}'\n")
+                    self.log(f"  Modelfile location: '{modelfile_path}'\n")
+                
                 return False, error
 
         except Exception as e:
@@ -1635,7 +1583,7 @@ SYSTEM \"""You are a helpful AI assistant.\"""
     def _detect_chat_template(self, model_name: str) -> Dict[str, str]:
         """Detect appropriate chat template for the model"""
         model_lower = model_name.lower()
-
+        
         # ChatML format (default and most compatible)
         if any(x in model_lower for x in ['mistral', 'mixtral', 'phi', 'qwen', 'yi']):
             return {
@@ -1646,7 +1594,7 @@ SYSTEM \"""You are a helpful AI assistant.\"""
                 'assistant_suffix': '<|im_end|>\\n',
                 'stop_token': '<|im_end|>'
             }
-
+        
         # Llama3 format
         elif any(x in model_lower for x in ['llama-3', 'llama3']):
             return {
@@ -1657,7 +1605,7 @@ SYSTEM \"""You are a helpful AI assistant.\"""
                 'assistant_suffix': '<|eot_id|>',
                 'stop_token': '<|eot_id|>'
             }
-
+        
         # Llama2 format
         elif any(x in model_lower for x in ['llama-2', 'llama2']):
             return {
@@ -1668,7 +1616,7 @@ SYSTEM \"""You are a helpful AI assistant.\"""
                 'assistant_suffix': ' </s>',
                 'stop_token': '</s>'
             }
-
+        
         # Alpaca format
         elif 'alpaca' in model_lower:
             return {
@@ -1679,8 +1627,8 @@ SYSTEM \"""You are a helpful AI assistant.\"""
                 'assistant_suffix': '\\n\\n',
                 'stop_token': '###'
             }
-
-        # Vicuna format
+        
+        # Vicuna format  
         elif 'vicuna' in model_lower:
             return {
                 'name': 'Vicuna',
@@ -1690,7 +1638,7 @@ SYSTEM \"""You are a helpful AI assistant.\"""
                 'assistant_suffix': '\\n',
                 'stop_token': 'USER:'
             }
-
+        
         # Gemma format
         elif 'gemma' in model_lower:
             return {
@@ -1701,7 +1649,7 @@ SYSTEM \"""You are a helpful AI assistant.\"""
                 'assistant_suffix': '<end_of_turn>\\n',
                 'stop_token': '<end_of_turn>'
             }
-
+        
         # Default to ChatML (most widely supported)
         else:
             self.log(f"  Using default ChatML template for: {model_name}\n")
@@ -1778,7 +1726,7 @@ class TrainingManager:
                            data[0].get('prompt', ''))
 
             if dataset_has_markers(sample_text, markers):
-                self.log(f"  ✓ Dataset already contains {tmpl_name} markers — using as-is\n")
+                self.log(f"  - Dataset already contains {tmpl_name} markers — using as-is\n")
             else:
                 # Check whether the entries have separate system/user/assistant fields
                 # so we can auto-wrap them
@@ -1812,7 +1760,7 @@ class TrainingManager:
                             if raw:
                                 wrapped.append({'text': raw})
                     data = wrapped
-                    self.log(f"  ✓ Auto-wrap complete — {len(data)} entries ready\n")
+                    self.log(f"  - Auto-wrap complete — {len(data)} entries ready\n")
                 else:
                     # Single 'text' field but no markers — loud warning
                     self.log(f"  ⚠ WARNING: Dataset 'text' field does NOT contain {tmpl_name} markers\n")
@@ -1839,7 +1787,7 @@ class TrainingManager:
             return None, f"Dataset preparation failed: {str(e)}"
 
     def load_model(self, config: TrainingConfig) -> Tuple[bool, str]:
-        """Load model with enhanced GPU support including Vulkan/OpenCL"""
+        """Load model with enhanced GPU support"""
         self.log(f"Loading model: {config.base_model}\n")
         self.log(f"Using backend: {GPU_TYPE} ({GPU_BACKEND})\n")
 
@@ -1864,18 +1812,6 @@ class TrainingManager:
             else:
                 backend_name = GPU_TYPE if HAS_GPU else "CPU"
                 self.log(f"Using standard Transformers ({backend_name})...\n")
-
-                # Special handling for Vulkan/OpenCL backends
-                if GPU_BACKEND in ["vulkan", "opencl"]:
-                    self.log(f"NOTE: {GPU_BACKEND.upper()} detected but not directly supported by PyTorch\n")
-                    self.log("Training will use CPU, but you can:\n")
-                    if GPU_BACKEND == "vulkan":
-                        self.log("  - Install torch-directml (Windows): pip install torch-directml\n")
-                        self.log("  - Use ONNX Runtime for inference acceleration\n")
-                    elif GPU_BACKEND == "opencl":
-                        self.log("  - Use PlaidML: pip install plaidml-keras plaidml\n")
-                        self.log("  - Use ONNX Runtime with OpenCL execution provider\n")
-                    self.log("Proceeding with CPU training...\n")
 
                 self.tokenizer = AutoTokenizer.from_pretrained(config.base_model)
                 if self.tokenizer.pad_token is None:
@@ -2007,9 +1943,21 @@ class TrainingManager:
                 remove_columns=dataset.column_names
             )
 
+            # DEBUG: Check first training example
+            if len(formatted_dataset) > 0:
+                first_text = formatted_dataset[0]["text"]
+                self.log("=" * 60 + "\n")
+                self.log("FIRST TRAINING EXAMPLE (first 500 chars):\n")
+                self.log(first_text[:500] + "\n")
+                self.log("=" * 60 + "\n")
+                self.log(f"Contains actual newlines: {'\n' in first_text}\n")
+                self.log(f"Contains backslash-n strings: {'\\n' in first_text}\n")
+                self.log("=" * 60 + "\n")
+            
             self.trainer = SFTTrainer(
                 model=self.model,
                 train_dataset=formatted_dataset,
+                dataset_text_field="text",  # CRITICAL: Explicitly specify text field
                 args=training_args,
                 callbacks=[ProgressCallback(self)],
             )
@@ -2025,7 +1973,7 @@ class TrainingManager:
                 if dpg.does_item_exist("training_progress_bar"):
                     dpg.set_value("training_progress_bar", 1.0)
                 if dpg.does_item_exist("progress_text"):
-                    dpg.set_value("progress_text", "Training Complete! ✓")
+                    dpg.set_value("progress_text", "Training Complete! -")
 
                 self.log("=" * 60 + "\n")
                 self.log("Training complete!\n")
@@ -2591,7 +2539,7 @@ class NTTunerGUI:
         if info:
             display, markers, _ = info
             dpg.set_value("template_indicator",
-                          f"✓ Detected template: {display}   (markers: {', '.join(markers)})")
+                          f"- Detected template: {display}   (markers: {', '.join(markers)})")
             dpg.configure_item("template_indicator", color=[100, 220, 100])
         else:
             dpg.set_value("template_indicator",
@@ -2881,7 +2829,7 @@ class NTTunerGUI:
                                    on_enter=True)
 
                 # Live template indicator — updated whenever model selection changes
-                dpg.add_text("? Enter or select a model to detect its chat template",
+                dpg.add_text("- Enter or select a model to detect its chat template",
                              tag="template_indicator", color=[255, 200, 80])
 
                 with dpg.group(horizontal=True):
@@ -3041,7 +2989,7 @@ class NTTunerGUI:
                 dpg.add_text("", tag="log", wrap=0)
 
             dpg.add_separator()
-            dpg.add_text("NTTuner Professional | Multi-Backend GPU Support | Advanced GGUF Export",
+            dpg.add_text("NTTuner Professional | Optimized for NTCompanion Datasets | Advanced GGUF Export",
                          color=[80, 80, 90])
 
         dpg.create_viewport(title='NTTuner - Fine-Tuning Studio', width=1050, height=1000)
@@ -3064,6 +3012,15 @@ class NTTunerGUI:
         for detail in GPU_INFO["details"]:
             self.append_log(f"  {detail}\n")
 
+        self.append_log("\nFEATURES:\n")
+        self.append_log("  - NTCompanion JSONL format support\n")
+        self.append_log("  - Enhanced GPU detection (CUDA/ROCm/MPS)\n")
+        self.append_log("  - Dataset validation and statistics\n")
+        self.append_log("  - VRAM usage estimation\n")
+        self.append_log("  - Progress tracking with ETA\n")
+        self.append_log("  - Auto-configuration\n")
+        self.append_log("  - Advanced GGUF export options\n")
+        self.append_log("=" * 70 + "\n\n")
 
         if not DEPS_AVAILABLE:
             self.append_log("[!] Missing dependencies\n")
