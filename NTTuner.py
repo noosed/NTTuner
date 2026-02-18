@@ -261,6 +261,12 @@ except ImportError:
 
 DEPS_AVAILABLE = HAS_TORCH and HAS_TRANSFORMERS
 
+try:
+    import bitsandbytes  # noqa: F401
+    HAS_BNB = True
+except ImportError:
+    HAS_BNB = False
+
 
 # ═══════════════════════════════════════════════════════════════════════
 # UTILITY FUNCTIONS
@@ -773,6 +779,61 @@ class GGUFExportConfig:
 # ────────────────────────────────────────────────────────────────────────
 
 
+# ────────────────────────────────────────────────────────────────────────
+# QLoRA Configuration
+# ────────────────────────────────────────────────────────────────────────
+
+@dataclass
+class QLoRAConfig:
+    """
+    Configuration for QLoRA (Quantized LoRA) training.
+
+    QLoRA loads the base model in 4-bit or 8-bit precision using
+    bitsandbytes, then attaches full-precision LoRA adapters on top.
+    This dramatically reduces VRAM usage compared to standard LoRA
+    while preserving most of the model quality.
+
+    Requirements: bitsandbytes, CUDA GPU (bitsandbytes does not support
+    CPU or MPS for quantized training).
+    """
+    enabled: bool = False
+    # Quantization precision: 4 or 8 bits
+    bits: int = 4
+    # NF4 (NormalFloat4) is the recommended type for 4-bit QLoRA;
+    # fp4 is an alternative with slightly less accuracy.
+    quant_type: str = "nf4"
+    # Double quantization: quantize the quantization constants themselves,
+    # saving ~0.37 bits per parameter with negligible accuracy loss.
+    double_quant: bool = True
+    # Compute dtype for the LoRA forward/backward pass.
+    # bfloat16 is preferred on Ampere+ (30xx/40xx); float16 for older cards.
+    compute_dtype: str = "bfloat16"
+
+    def get_compute_torch_dtype(self):
+        """Return the torch dtype for the compute_dtype string."""
+        if not HAS_TORCH:
+            return None
+        return torch.bfloat16 if self.compute_dtype == "bfloat16" else torch.float16
+
+    def validate(self) -> Tuple[bool, str]:
+        if self.bits not in (4, 8):
+            return False, "QLoRA bits must be 4 or 8"
+        if self.bits == 4 and self.quant_type not in ("nf4", "fp4"):
+            return False, "QLoRA quant_type must be 'nf4' or 'fp4' when bits=4"
+        if not HAS_BNB:
+            return False, "QLoRA requires bitsandbytes: pip install bitsandbytes"
+        if GPU_BACKEND not in ("cuda",):
+            return False, (
+                f"QLoRA requires a CUDA GPU (current backend: {GPU_BACKEND}). "
+                "bitsandbytes does not support CPU or Apple MPS."
+            )
+        return True, "QLoRA config valid"
+
+# ────────────────────────────────────────────────────────────────────────
+# End: QLoRA Configuration
+# ────────────────────────────────────────────────────────────────────────
+
+
 @dataclass
 class TrainingConfig:
     """Training configuration with validation"""
@@ -797,18 +858,32 @@ class TrainingConfig:
     # Added: GGUF export config field (2026)
     # ────────────────────────────────────────────────────────────────────
     gguf_export: GGUFExportConfig = field(default_factory=GGUFExportConfig)
-
-    # ────────────────────────────────────────────────────────────────────
+    qlora: QLoRAConfig = field(default_factory=QLoRAConfig)
 
     def validate(self) -> Tuple[bool, str]:
         """Validate configuration"""
         if not self.base_model.strip():
             return False, "Base model cannot be empty"
-        # Block Ollama colon-style names (e.g. "qwen2.5:0.5b") — they crash HF loader
+        # Block Ollama colon-style names (e.g. "qwen2.5:0.5b") — they crash the HF loader.
+        # Exception: if the name is in the locally installed Ollama models list, the user
+        # is intentionally targeting an Ollama model; still warn but don't hard-block.
         if ":" in self.base_model and "/" not in self.base_model:
-            return False, (f"'{self.base_model}' is an Ollama pull name and cannot be loaded directly. "
-                           f"Use the Download button first, then select the HuggingFace equivalent "
-                           f"(e.g. Qwen/Qwen2.5-0.5B-Instruct).")
+            # Ollama GGUF files can't be loaded by HuggingFace — training always needs
+            # the original safetensors weights regardless of whether the model is installed.
+            installed = get_ollama_models()
+            if self.base_model in installed:
+                return False, (
+                    f"'{self.base_model}' is installed in Ollama as a GGUF file, but training "
+                    f"requires the original HuggingFace safetensors weights. "
+                    f"Select the HuggingFace equivalent from the dropdown instead — "
+                    f"e.g. 'meta-llama/Llama-3.2-3B-Instruct' instead of 'llama3.2:3b'."
+                )
+            else:
+                return False, (
+                    f"'{self.base_model}' is an Ollama pull name and cannot be loaded directly. "
+                    f"Use the Download button to pull it, then select the HuggingFace equivalent "
+                    f"for training (e.g. meta-llama/Llama-3.2-3B-Instruct)."
+                )
         if not self.dataset_path.strip():
             return False, "Dataset path cannot be empty"
         if not os.path.exists(self.dataset_path):
@@ -823,6 +898,10 @@ class TrainingConfig:
             return False, "Learning rate must be positive"
         if self.max_seq_length < 128:
             return False, "Max sequence length must be at least 128"
+        if self.qlora.enabled:
+            ok, msg = self.qlora.validate()
+            if not ok:
+                return False, f"QLoRA: {msg}"
         return True, "Configuration valid"
 
     def get_warnings(self) -> List[str]:
@@ -842,6 +921,13 @@ class TrainingConfig:
             estimated_vram = self.estimate_vram_usage()
             if estimated_vram > GPU_MEMORY:
                 warnings.append(f"Estimated VRAM ({estimated_vram:.1f}GB) exceeds available ({GPU_MEMORY:.1f}GB)")
+        if self.qlora.enabled:
+            if not HAS_BNB:
+                warnings.append("QLoRA enabled but bitsandbytes not installed — will fall back to standard LoRA")
+            elif GPU_BACKEND != "cuda":
+                warnings.append(f"QLoRA requires CUDA (current: {GPU_BACKEND}) — will fall back to standard LoRA")
+            elif self.qlora.bits == 4 and GPU_MEMORY < 6.0:
+                warnings.append("4-bit QLoRA on <6 GB VRAM — reduce batch size and sequence length")
         return warnings
 
     def estimate_vram_usage(self) -> float:
@@ -849,7 +935,12 @@ class TrainingConfig:
         if not HAS_GPU:
             return 0.0
         base = 2.0
-        model = 4.0
+        # QLoRA stores the base model at 0.5 bytes/param (4-bit) or 1 byte/param (8-bit)
+        # vs ~2 bytes/param for fp16 standard LoRA, so model footprint is much smaller.
+        if self.qlora.enabled and GPU_BACKEND == "cuda":
+            model = 4.0 / (4 if self.qlora.bits == 4 else 2)
+        else:
+            model = 4.0
         batch = (self.batch_size * self.max_seq_length * 4) / (1024 ** 3)
         lora = (self.lora_rank * 2 * 0.001)
         grad = batch * self.grad_accumulation * 2
@@ -901,18 +992,10 @@ class DatasetHandler:
 
             if format_type == 'jsonl':
                 with open(filepath, 'r', encoding='utf-8') as f:
-                    for line_num, line in enumerate(f, 1):
+                    for line in f:
                         line = line.strip()
                         if line:
-                            parsed = json.loads(line)
-                            # Debug: Check first entry for newline issues
-                            if line_num == 1 and "text" in parsed:
-                                has_real_newlines = '\n' in parsed["text"]
-                                has_escaped_newlines = '\\n' in parsed["text"]
-                                print(f"[DEBUG] First entry - Real newlines: {has_real_newlines}, Escaped \\n: {has_escaped_newlines}")
-                                if has_escaped_newlines:
-                                    print("[WARNING] Dataset contains literal \\n strings - this will cause output issues!")
-                            data.append(parsed)
+                            data.append(json.loads(line))
 
             elif format_type == 'json':
                 with open(filepath, 'r', encoding='utf-8') as f:
@@ -1809,6 +1892,9 @@ class TrainingManager:
                                     "gate_proj", "up_proj", "down_proj"],
                     use_gradient_checkpointing="unsloth",
                 )
+            elif config.qlora.enabled and HAS_BNB and GPU_BACKEND == "cuda":
+                self.log(f"Using QLoRA ({config.qlora.bits}-bit, {config.qlora.quant_type})...\n")
+                self._load_model_qlora(config)
             else:
                 backend_name = GPU_TYPE if HAS_GPU else "CPU"
                 self.log(f"Using standard Transformers ({backend_name})...\n")
@@ -1850,6 +1936,79 @@ class TrainingManager:
             self.log(f"{traceback.format_exc()}\n")
             return False, error_msg
 
+    def _load_model_qlora(self, config: TrainingConfig):
+        """
+        Load the base model in 4-bit or 8-bit precision via bitsandbytes,
+        then attach full-precision LoRA adapters using PEFT.
+
+        This implements the QLoRA technique (Dettmers et al., 2023):
+          1. Base model weights are frozen and stored in NF4/FP4 (4-bit) or INT8.
+          2. LoRA adapter matrices (A, B) are in the compute dtype (bf16/fp16).
+          3. Forward pass dequantizes weights on-the-fly; only adapter gradients
+             are stored, so peak VRAM is ~4x lower than full-precision LoRA.
+
+        Sets self.model and self.tokenizer.
+        """
+        from transformers import BitsAndBytesConfig
+        from peft import prepare_model_for_kbit_training
+
+        q = config.qlora
+        compute_dtype = q.get_compute_torch_dtype()
+
+        # ── 1. Build the BitsAndBytesConfig ──────────────────────────────
+        if q.bits == 4:
+            bnb_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_quant_type=q.quant_type,          # "nf4" or "fp4"
+                bnb_4bit_use_double_quant=q.double_quant,  # saves ~0.37 bits/param
+                bnb_4bit_compute_dtype=compute_dtype,
+            )
+            self.log(
+                f"  BitsAndBytes: 4-bit {q.quant_type.upper()}, "
+                f"double_quant={q.double_quant}, compute={q.compute_dtype}\n"
+            )
+        else:  # 8-bit
+            bnb_config = BitsAndBytesConfig(load_in_8bit=True)
+            self.log("  BitsAndBytes: 8-bit INT8\n")
+
+        # ── 2. Tokenizer ─────────────────────────────────────────────────
+        self.tokenizer = AutoTokenizer.from_pretrained(config.base_model)
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+
+        # ── 3. Load quantized base model ──────────────────────────────────
+        self.log(f"  Loading quantized base model: {config.base_model}\n")
+        self.model = AutoModelForCausalLM.from_pretrained(
+            config.base_model,
+            quantization_config=bnb_config,
+            device_map="auto",          # bitsandbytes requires CUDA; "auto" is correct
+            torch_dtype=compute_dtype,
+        )
+
+        # ── 4. Prepare model for k-bit training ──────────────────────────
+        # Casts layer norms and the LM head to fp32, enables gradient checkpointing,
+        # and disables cache (incompatible with checkpointing).
+        self.model = prepare_model_for_kbit_training(
+            self.model,
+            use_gradient_checkpointing=True,
+        )
+
+        # ── 5. Attach LoRA adapters ───────────────────────────────────────
+        # For 4-bit QLoRA the standard target modules are the attention
+        # projections.  Gate/up/down (MLP) can be added for better quality
+        # at the cost of more adapter parameters.
+        lora_config = LoraConfig(
+            r=config.lora_rank,
+            lora_alpha=config.lora_alpha,
+            lora_dropout=config.lora_dropout,
+            target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
+                            "gate_proj", "up_proj", "down_proj"],
+            bias="none",        # recommended for QLoRA
+            task_type="CAUSAL_LM",
+        )
+        self.model = get_peft_model(self.model, lora_config)
+        self.log("  QLoRA adapters attached\n")
+
     def train(self, config: TrainingConfig) -> bool:
         """Execute training with monitoring"""
         if not DEPS_AVAILABLE:
@@ -1881,6 +2040,18 @@ class TrainingManager:
 
             optim = "adamw_8bit" if GPU_BACKEND == "cuda" else "adamw_torch"
 
+            # QLoRA: choose compute dtype flags for TrainingArguments
+            use_fp16 = GPU_BACKEND in ["cuda", "hip"]
+            use_bf16 = False
+            if config.qlora.enabled and GPU_BACKEND == "cuda" and HAS_BNB:
+                if config.qlora.compute_dtype == "bfloat16":
+                    use_bf16 = True
+                    use_fp16 = False
+                self.log(
+                    f"[QLoRA] {config.qlora.bits}-bit, compute={config.qlora.compute_dtype}, "
+                    f"optim={optim}\n"
+                )
+
             training_args = TrainingArguments(
                 output_dir=config.output_dir,
                 num_train_epochs=config.epochs,
@@ -1891,7 +2062,8 @@ class TrainingManager:
                 logging_steps=config.logging_steps,
                 save_steps=config.save_steps,
                 save_total_limit=3,
-                fp16=(GPU_BACKEND in ["cuda", "hip"]),
+                fp16=use_fp16,
+                bf16=use_bf16,
                 optim=optim,
                 report_to="none",
             )
@@ -1943,21 +2115,9 @@ class TrainingManager:
                 remove_columns=dataset.column_names
             )
 
-            # DEBUG: Check first training example
-            if len(formatted_dataset) > 0:
-                first_text = formatted_dataset[0]["text"]
-                self.log("=" * 60 + "\n")
-                self.log("FIRST TRAINING EXAMPLE (first 500 chars):\n")
-                self.log(first_text[:500] + "\n")
-                self.log("=" * 60 + "\n")
-                self.log(f"Contains actual newlines: {'\n' in first_text}\n")
-                self.log(f"Contains backslash-n strings: {'\\n' in first_text}\n")
-                self.log("=" * 60 + "\n")
-            
             self.trainer = SFTTrainer(
                 model=self.model,
                 train_dataset=formatted_dataset,
-                dataset_text_field="text",  # CRITICAL: Explicitly specify text field
                 args=training_args,
                 callbacks=[ProgressCallback(self)],
             )
@@ -2281,11 +2441,8 @@ class NTTunerGUI:
         self.config.save_steps = dpg.get_value("save_steps")
         self.config.logging_steps = dpg.get_value("logging_steps")
 
-        # ────────────────────────────────────────────────────────────────
-        # Added: Read GGUF export config from GUI (2026)
-        # ────────────────────────────────────────────────────────────────
         self._read_gguf_config_from_gui()
-        # ────────────────────────────────────────────────────────────────
+        self._read_qlora_config_from_gui()
 
     # ────────────────────────────────────────────────────────────────────────
     # Added: GGUF config reader (2026)
@@ -2315,7 +2472,19 @@ class NTTunerGUI:
         if dpg.does_item_exist("gguf_keep_f16"):
             self.config.gguf_export.keep_f16_base = dpg.get_value("gguf_keep_f16")
 
-    # ────────────────────────────────────────────────────────────────────────
+    def _read_qlora_config_from_gui(self):
+        """Read QLoRA configuration from GUI widgets."""
+        if dpg.does_item_exist("qlora_enabled"):
+            self.config.qlora.enabled = dpg.get_value("qlora_enabled")
+        if dpg.does_item_exist("qlora_bits"):
+            raw = dpg.get_value("qlora_bits")
+            self.config.qlora.bits = int(raw.replace("-bit", "").strip())
+        if dpg.does_item_exist("qlora_quant_type"):
+            self.config.qlora.quant_type = dpg.get_value("qlora_quant_type")
+        if dpg.does_item_exist("qlora_double_quant"):
+            self.config.qlora.double_quant = dpg.get_value("qlora_double_quant")
+        if dpg.does_item_exist("qlora_compute_dtype"):
+            self.config.qlora.compute_dtype = dpg.get_value("qlora_compute_dtype")
 
     def validate_and_warn(self) -> bool:
         """Validate configuration"""
@@ -2499,7 +2668,24 @@ class NTTunerGUI:
         dpg.show_item("file_dialog")
 
     def show_output_dir_dialog(self):
-        dpg.show_item("output_dir_dialog")
+        """Open a native Windows Explorer folder picker via tkinter."""
+        def _pick():
+            try:
+                import tkinter as tk
+                from tkinter import filedialog
+                root = tk.Tk()
+                root.withdraw()
+                root.attributes("-topmost", True)
+                folder = filedialog.askdirectory(title="Select Output Directory")
+                root.destroy()
+                if folder:
+                    dpg.set_value("output_dir", folder)
+                    self.append_log(f"Output dir: {folder}\n")
+            except Exception as e:
+                # Fallback to Dear PyGui dialog if tkinter is unavailable
+                self.append_log(f"[!] Native picker failed ({e}), using built-in dialog\n")
+                dpg.show_item("output_dir_dialog")
+        threading.Thread(target=_pick, daemon=True).start()
 
     def select_file_callback(self, sender, app_data):
         selections = app_data["selections"]
@@ -2528,11 +2714,23 @@ class NTTunerGUI:
         if not dpg.does_item_exist("template_indicator"):
             return
 
-        # Ollama colon names cannot be loaded by transformers
+        # Ollama colon-style names: warn unless it's already installed locally.
         if ":" in model_name and "/" not in model_name:
-            dpg.set_value("template_indicator",
-                          f"⚠ '{model_name}' is an Ollama name — use Download first, then pick the HuggingFace equivalent")
-            dpg.configure_item("template_indicator", color=[255, 180, 80])
+            installed = get_ollama_models()
+            if model_name in installed:
+                dpg.set_value(
+                    "template_indicator",
+                    f"- '{model_name}' is installed in Ollama. "
+                    f"Note: training requires the HuggingFace weights, not an Ollama GGUF."
+                )
+                dpg.configure_item("template_indicator", color=[255, 200, 80])
+            else:
+                dpg.set_value(
+                    "template_indicator",
+                    f"⚠ '{model_name}' is an Ollama pull name — use Download first, "
+                    f"then pick the HuggingFace equivalent for training."
+                )
+                dpg.configure_item("template_indicator", color=[255, 100, 80])
             return
 
         info = detect_template_for_model(model_name)
@@ -2553,20 +2751,44 @@ class NTTunerGUI:
             dpg.configure_item("base_model_combo", items=self.available_models)
 
     def download_model(self):
-        model = dpg.get_value("base_model_combo")
-        if model.startswith("---") or "/" in model:
-            self.append_log("[!] Select an Ollama model\n")
+        # Prefer the custom text field if it looks like an Ollama name,
+        # then fall back to whatever is selected in the combo.
+        custom = dpg.get_value("base_model").strip() if dpg.does_item_exist("base_model") else ""
+        combo  = dpg.get_value("base_model_combo").strip() if dpg.does_item_exist("base_model_combo") else ""
+
+        def _is_ollama_name(s):
+            """Ollama pull names have a colon and no slash, e.g. llama3.2:3b"""
+            return ":" in s and "/" not in s and not s.startswith("---")
+
+        if _is_ollama_name(custom):
+            model = custom
+        elif _is_ollama_name(combo):
+            model = combo
+        else:
+            self.append_log(
+                "[!] No Ollama model selected for download.\n"
+                "    Pick one from 'Ollama Pull Only (Download first)' in the dropdown,\n"
+                "    or type the name directly (e.g. llama3.2:3b) in the Custom Model field.\n"
+            )
             return
 
-        self.append_log(f"Downloading {model}...\n")
+        self.append_log(f"Downloading {model} via Ollama...\n")
 
         def download():
             try:
-                result = subprocess.run(["ollama", "pull", model], capture_output=True, text=True, timeout=300)
+                result = subprocess.run(
+                    ["ollama", "pull", model],
+                    capture_output=True, text=True, timeout=600,
+                )
                 if result.returncode == 0:
                     self.append_log(f"[OK] {model} downloaded\n")
+                    self.append_log("     Refresh the model list to see it under 'Ollama Models (Installed)'.\n")
                 else:
-                    self.append_log(f"[ERROR] {result.stderr}\n")
+                    self.append_log(f"[ERROR] Download failed: {result.stderr or result.stdout}\n")
+            except subprocess.TimeoutExpired:
+                self.append_log(f"[ERROR] Download timed out (>10 min) for {model}\n")
+            except FileNotFoundError:
+                self.append_log("[ERROR] 'ollama' command not found — is Ollama installed and on PATH?\n")
             except Exception as e:
                 self.append_log(f"[ERROR] {str(e)}\n")
 
@@ -2631,10 +2853,54 @@ class NTTunerGUI:
                         dpg.set_value("gguf_auto_ollama", gguf_data.get("auto_import_ollama", True))
                     if dpg.does_item_exist("gguf_keep_f16"):
                         dpg.set_value("gguf_keep_f16", gguf_data.get("keep_f16_base", False))
-                # ────────────────────────────────────────────────────────────
+                if "qlora" in data:
+                    qd = data["qlora"]
+                    if dpg.does_item_exist("qlora_enabled"):
+                        val = qd.get("enabled", False)
+                        dpg.set_value("qlora_enabled", val)
+                        self._on_qlora_toggled(None, val)
+                    if dpg.does_item_exist("qlora_bits"):
+                        dpg.set_value("qlora_bits", f"{qd.get('bits', 4)}-bit")
+                    if dpg.does_item_exist("qlora_quant_type"):
+                        dpg.set_value("qlora_quant_type", qd.get("quant_type", "nf4"))
+                    if dpg.does_item_exist("qlora_double_quant"):
+                        dpg.set_value("qlora_double_quant", qd.get("double_quant", True))
+                    if dpg.does_item_exist("qlora_compute_dtype"):
+                        dpg.set_value("qlora_compute_dtype", qd.get("compute_dtype", "bfloat16"))
                 self.append_log(f"[OK] Config loaded\n")
             except Exception as e:
                 self.append_log(f"[ERROR] {str(e)}\n")
+
+    # ── QLoRA GUI callbacks ───────────────────────────────────────────────
+
+    def _on_qlora_toggled(self, sender, app_data):
+        """Enable/disable QLoRA sub-controls based on the checkbox."""
+        enabled = app_data
+        for tag in ("qlora_bits", "qlora_quant_type", "qlora_compute_dtype",
+                    "qlora_double_quant"):
+            if dpg.does_item_exist(tag):
+                dpg.configure_item(tag, enabled=enabled)
+        self.config.qlora.enabled = enabled
+        if enabled:
+            self._on_qlora_bits_changed(None, dpg.get_value("qlora_bits"))
+
+    def _on_qlora_bits_changed(self, sender, app_data):
+        """When the user switches between 4-bit and 8-bit, hide quant_type
+        (only meaningful for 4-bit) and update the tip text."""
+        is_4bit = (app_data == "4-bit")
+        if dpg.does_item_exist("qlora_quant_type"):
+            dpg.configure_item("qlora_quant_type", enabled=is_4bit)
+        if dpg.does_item_exist("qlora_double_quant"):
+            dpg.configure_item("qlora_double_quant", enabled=is_4bit)
+        if dpg.does_item_exist("qlora_tip_text"):
+            if is_4bit:
+                dpg.set_value("qlora_tip_text",
+                              "Tip: NF4 + bfloat16 + double quant is the recommended QLoRA setup.")
+            else:
+                dpg.set_value("qlora_tip_text",
+                              "Tip: 8-bit uses less VRAM than fp16 but more than 4-bit. Quant type N/A.")
+
+    # ── End QLoRA GUI callbacks ───────────────────────────────────────────
 
     # ────────────────────────────────────────────────────────────────────────
     # Added: GGUF export GUI callbacks (2026)
@@ -2881,6 +3147,81 @@ class NTTunerGUI:
                     dpg.add_input_text(label="Output Dir", default_value=self.config.output_dir, tag="output_dir",
                                        width=380)
                     dpg.add_button(label="Browse", callback=self.show_output_dir_dialog, width=80)
+
+            # ── QLoRA Section ─────────────────────────────────────────────────
+            with dpg.collapsing_header(label="QLoRA (Quantized LoRA)", default_open=False):
+                qlora_avail = HAS_BNB and GPU_BACKEND == "cuda"
+                if not HAS_BNB:
+                    dpg.add_text(
+                        "bitsandbytes not installed — QLoRA unavailable",
+                        color=[255, 120, 80],
+                    )
+                    dpg.add_text(
+                        "  Install: pip install bitsandbytes",
+                        color=[180, 180, 180],
+                    )
+                elif GPU_BACKEND != "cuda":
+                    dpg.add_text(
+                        f"QLoRA requires a CUDA GPU (detected: {GPU_BACKEND})",
+                        color=[255, 180, 80],
+                    )
+                else:
+                    dpg.add_text(
+                        "Load the base model in 4-bit or 8-bit to fit large models in less VRAM.",
+                        color=[160, 200, 160],
+                    )
+
+                dpg.add_checkbox(
+                    label="Enable QLoRA (quantized base model + LoRA adapters)",
+                    tag="qlora_enabled",
+                    default_value=False,
+                    enabled=qlora_avail,
+                    callback=self._on_qlora_toggled,
+                )
+
+                dpg.add_spacer(height=4)
+
+                with dpg.group(horizontal=True):
+                    dpg.add_combo(
+                        label="Quantization Bits",
+                        items=["4-bit", "8-bit"],
+                        default_value="4-bit",
+                        tag="qlora_bits",
+                        width=140,
+                        enabled=False,
+                        callback=self._on_qlora_bits_changed,
+                    )
+                    dpg.add_combo(
+                        label="Quant Type",
+                        items=["nf4", "fp4"],
+                        default_value="nf4",
+                        tag="qlora_quant_type",
+                        width=100,
+                        enabled=False,
+                    )
+                    dpg.add_combo(
+                        label="Compute Dtype",
+                        items=["bfloat16", "float16"],
+                        default_value="bfloat16",
+                        tag="qlora_compute_dtype",
+                        width=130,
+                        enabled=False,
+                    )
+
+                dpg.add_checkbox(
+                    label="Double quantization (saves ~0.37 bits/param, negligible accuracy loss)",
+                    tag="qlora_double_quant",
+                    default_value=True,
+                    enabled=False,
+                )
+
+                dpg.add_spacer(height=4)
+                dpg.add_text(
+                    "Tip: NF4 + bfloat16 + double quant is the recommended QLoRA setup.",
+                    color=[130, 180, 130],
+                    tag="qlora_tip_text",
+                )
+            # ── End QLoRA Section ─────────────────────────────────────────────
 
             # ────────────────────────────────────────────────────────────────────
             # Added: Advanced GGUF Export Section (2026)
